@@ -2,7 +2,7 @@
 
 A lightweight, event-driven display manager for ClockworkPi uConsole on Wayland. It automatically switches screens via HDMI plug/unplug with 0% background CPU usage.
 
-[點擊此處跳轉至中文版說明](#zh-tw)
+[點擊此處跳轉至中文版說明](#中文版說明-traditional-chinese)
 
 **⚠️ Requirements:** Exclusive for Raspberry Pi OS Trixie (Wayland / Labwc).
 * Does NOT support older X11-based environments (Buster/Bullseye).
@@ -50,7 +50,6 @@ usm-uninstall
 
 ---
 
-<a id="zh-tw"></a>
 # 中文版說明 (Traditional Chinese)
 
 專為 ClockworkPi uConsole 設計的輕量級、事件驅動螢幕管理器。支援 HDMI 插拔自動切換螢幕，且背景 CPU 佔用率為 0%。
