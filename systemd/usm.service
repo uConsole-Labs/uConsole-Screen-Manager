@@ -1,0 +1,13 @@
+[Unit]
+Description=USM Background Daemon
+After=graphical-session.target
+ConditionEnvironment=WAYLAND_DISPLAY
+
+[Service]
+Type=simple
+ExecStart=%h/.config/usm/usm-core.sh
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=default.target
