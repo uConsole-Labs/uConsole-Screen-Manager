@@ -1,20 +1,18 @@
 #!/bin/bash
-# Core logic for USM. Strictly event-driven via udevadm.
+# Core daemon. Listens to udevadm and delegates actions to usm-cli.sh.
 
 set -euo pipefail
 
 # --- Constants ---
 readonly CONF_FILE="$HOME/.config/usm/usm.conf"
+readonly CLI_CMD="$HOME/.local/bin/usm-cli.sh"
 readonly DRM_PATH="/sys/class/drm"
-readonly CMD_TASKBAR="wf-panel-pi"
-readonly HOOK_PLUG="hook-plug.sh"
-readonly HOOK_UNPLUG="hook-unplug.sh"
 readonly STATE_CONN="connected"
 readonly STATE_DISC="disconnected"
 
 # Format and print state strings to stderr for journalctl
 usm_print_state() {
-  echo "[USM]: $1" >&2
+  echo "[USM] Core: $1" >&2
 }
 
 # Load configuration
@@ -26,13 +24,6 @@ else
 fi
 
 LAST_STATE="unknown"
-
-# Restart native taskbar to enforce primary screen alignment
-restart_bar() {
-  if pgrep -x "$CMD_TASKBAR" >/dev/null; then
-    killall "$CMD_TASKBAR" && "$CMD_TASKBAR" >/dev/null 2>&1 &
-  fi
-}
 
 # Execute custom hooks if enabled, exist, and are executable
 run_hook() {
@@ -46,7 +37,7 @@ run_hook() {
   fi
 }
 
-# Apply Wayland outputs using wlr-randr
+# Delegate display logic to CLI tool
 apply_display() {
   local target_state="$1"
 
@@ -54,39 +45,25 @@ apply_display() {
     return 0
   fi
 
-  # Log the formatted state
-  usm_print_state "$target_state"
+  usm_print_state "State changed to: $target_state"
 
   if [[ "$target_state" == "$STATE_CONN" ]]; then
-    local ext_cmd="wlr-randr --output $USM_EXT_OUT --on"
-    [[ -n "$USM_EXT_RES" ]] && ext_cmd+=" --mode $USM_EXT_RES"
-    [[ -n "$USM_EXT_SCALE" ]] && ext_cmd+=" --scale $USM_EXT_SCALE"
-    [[ -n "$USM_EXT_POS" ]] && ext_cmd+=" --pos $USM_EXT_POS"
 
-    eval "$ext_cmd"
-    sleep 1 # Wait 1 second for compositor to register the output
-
-    # Fail-Safe: Verify external output before turning off internal
-    if wlr-randr | grep -q "$USM_EXT_OUT"; then
-      if [[ "$USM_MODE" == "single" ]]; then
-        wlr-randr --output "$USM_INT_OUT" --off
-      else
-        wlr-randr --output "$USM_INT_OUT" --on
-      fi
-      restart_bar
-      run_hook "$HOOK_PLUG"
+    # Call CLI for display switching (abort if handshake fails)
+    if [[ "${USM_MODE:-single}" == "single" ]]; then
+      "$CLI_CMD" screen-ext || return 1
     else
-      # Handshake failed, keep internal display active
-      wlr-randr --output "$USM_INT_OUT" --on
-      return 1
+      "$CLI_CMD" screen-dual || return 1
     fi
+
+    run_hook "hook-plug.sh"
+
   elif [[ "$target_state" == "$STATE_DISC" ]]; then
-    # Disconnected state: restore internal display
-    wlr-randr --output "$USM_INT_OUT" --on
-    sleep 0.5
-    wlr-randr --output "$USM_EXT_OUT" --off || true
-    restart_bar
-    run_hook "$HOOK_UNPLUG"
+
+    "$CLI_CMD" screen-int
+
+    run_hook "hook-unplug.sh"
+
   fi
 
   LAST_STATE="$target_state"
@@ -95,7 +72,8 @@ apply_display() {
 # Verify physical HDMI connection and EDID
 check_hdmi_state() {
   local stat_dir
-  stat_dir=$(find "$DRM_PATH" -name "card*-$USM_EXT_OUT" -type d | head -n 1)
+  stat_dir=$(find "$DRM_PATH" -maxdepth 1 -name "card*-$USM_EXT_OUT" \
+    | head -n 1)
 
   if [[ -z "$stat_dir" ]]; then
     echo "$STATE_DISC"
@@ -107,7 +85,6 @@ check_hdmi_state() {
   status=$(cat "$stat_dir/status" 2>/dev/null || echo "$STATE_DISC")
   edid_size=$(wc -c < "$stat_dir/edid" 2>/dev/null || echo "0")
 
-  # Validate both status and physical EDID presence
   if [[ "$status" == "$STATE_CONN" ]] && (( edid_size > 0 )); then
     echo "$STATE_CONN"
   else
