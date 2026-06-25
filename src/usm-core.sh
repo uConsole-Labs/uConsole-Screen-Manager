@@ -92,7 +92,17 @@ check_hdmi_state() {
   fi
 }
 
+# Wait for Wayland compositor to be fully initialized
+wait_for_compositor() {
+  usm_print_state "Waiting for Wayland compositor..."
+  while ! wlr-randr >/dev/null 2>&1; do
+    sleep 1
+  done
+  usm_print_state "Wayland compositor is ready."
+}
+
 # Initialize correct state on script startup
+wait_for_compositor
 apply_display "$(check_hdmi_state)"
 
 # Block and listen for kernel DRM events (0% CPU polling)
