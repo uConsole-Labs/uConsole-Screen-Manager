@@ -11,6 +11,7 @@ readonly BASHRC="$HOME/.bashrc"
 readonly FILE_CORE="usm-core.sh"
 readonly FILE_CLI="usm-cli.sh"
 readonly FILE_CONF="usm.conf"
+readonly FILE_VER="VERSION"
 readonly FILE_SVC="usm.service"
 readonly FILE_UNINST="usm-uninstall"
 readonly LOG_PREFIX="[USM] Installer:"
@@ -79,6 +80,9 @@ chmod +x "$USM_DIR/$FILE_CORE"
 cp "src/$FILE_CLI" "$BIN_DIR/$FILE_CLI"
 chmod +x "$BIN_DIR/$FILE_CLI"
 
+# Copy Version file to configuration directory
+cp "$FILE_VER" "$USM_DIR/$FILE_VER"
+
 if [[ ! -f "$USM_DIR/$FILE_CONF" ]]; then
   cp "conf/$FILE_CONF" "$USM_DIR/$FILE_CONF"
 fi
@@ -118,15 +122,22 @@ EOF
 
 chmod +x "$BIN_DIR/$FILE_UNINST"
 
-# Enable and start the background service
-log "Starting USM service..."
+# Enable the background service
+log "Enabling USM service..."
 systemctl --user daemon-reload
-systemctl --user enable --now "$FILE_SVC"
+systemctl --user enable "$FILE_SVC"
 
 # Start mako for the current session if not already running
 if command -v mako >/dev/null 2>&1 && ! pgrep -x "mako" >/dev/null; then
   log "Starting mako daemon..."
   mako >/dev/null 2>&1 &
+fi
+
+# Prompt to start the service immediately
+read -r -p "Do you want to start the USM service now? [y/N] " start_resp
+if [[ "$start_resp" =~ ^[Yy]$ ]]; then
+  log "Starting USM service..."
+  systemctl --user start "$FILE_SVC"
 fi
 
 log "Installation complete! Please reload bashrc or restart terminal."
