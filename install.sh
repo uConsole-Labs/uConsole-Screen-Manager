@@ -45,6 +45,8 @@ if ! command -v mako >/dev/null 2>&1; then
 fi
 
 # Configure mako and labwc autostart
+mkdir -p "$LABWC_DIR"
+
 if command -v mako >/dev/null 2>&1; then
   if [[ ! -f "$MAKO_CONF" ]]; then
     log "Creating mako configuration..."
@@ -65,11 +67,22 @@ default-timeout=4000
 EOF
   fi
 
-  mkdir -p "$LABWC_DIR"
   if [[ ! -f "$LABWC_AUTO" ]] || ! grep -q "mako" "$LABWC_AUTO"; then
     log "Adding mako to labwc autostart..."
     echo "mako >/dev/null 2>&1 &" >> "$LABWC_AUTO"
   fi
+fi
+
+# Configure labwc autostart for Wayland env and USM service
+if [[ ! -f "$LABWC_AUTO" ]] || ! grep -q "restart $FILE_SVC" "$LABWC_AUTO"; then
+  log "Configuring Labwc autostart for USM service..."
+
+  if ! grep -q "import-environment WAYLAND_DISPLAY" "$LABWC_AUTO" \
+       2>/dev/null; then
+    echo "systemctl --user import-environment WAYLAND_DISPLAY" >> "$LABWC_AUTO"
+  fi
+
+  echo "systemctl --user restart $FILE_SVC" >> "$LABWC_AUTO"
 fi
 
 mkdir -p "$USM_DIR" "$SYS_DIR" "$BIN_DIR"
@@ -115,6 +128,7 @@ rm -f "\$HOME/.config/systemd/user/$FILE_SVC"
 systemctl --user daemon-reload
 rm -rf "\$HOME/.config/usm"
 sed -i '/alias usm=/d' "\$HOME/.bashrc"
+sed -i "/restart $FILE_SVC/d" "\$HOME/.config/labwc/autostart" || true
 rm -f "\$HOME/.local/bin/$FILE_CLI"
 rm -f "\$HOME/.local/bin/$FILE_UNINST"
 printf "%s USM successfully removed.\n" "\$LOG_PREFIX"
@@ -137,7 +151,9 @@ fi
 read -r -p "Do you want to start the USM service now? [y/N] " start_resp
 if [[ "$start_resp" =~ ^[Yy]$ ]]; then
   log "Starting USM service..."
-  systemctl --user start "$FILE_SVC"
+  # Explicitly import environment for the current session
+  systemctl --user import-environment WAYLAND_DISPLAY 2>/dev/null || true
+  systemctl --user restart "$FILE_SVC"
 fi
 
 log "Installation complete! Please reload bashrc or restart terminal."
