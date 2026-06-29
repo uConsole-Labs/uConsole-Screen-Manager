@@ -8,7 +8,6 @@ readonly USM_DIR="$HOME/.config/usm"
 readonly SYS_DIR="$HOME/.config/systemd/user"
 readonly BIN_DIR="$HOME/.local/bin"
 readonly BASHRC="$HOME/.bashrc"
-readonly FILE_CORE="usm-core.sh"
 readonly FILE_CLI="usm-cli.sh"
 readonly FILE_CONF="usm.conf"
 readonly FILE_VER="VERSION"
@@ -86,8 +85,6 @@ if [[ ! -f "$LABWC_AUTO" ]] || ! grep -q "restart $FILE_SVC" "$LABWC_AUTO"; then
 fi
 
 mkdir -p "$USM_DIR" "$SYS_DIR" "$BIN_DIR"
-cp "src/$FILE_CORE" "$USM_DIR/$FILE_CORE"
-chmod +x "$USM_DIR/$FILE_CORE"
 
 # Copy CLI tool to binary directory
 cp "src/$FILE_CLI" "$BIN_DIR/$FILE_CLI"

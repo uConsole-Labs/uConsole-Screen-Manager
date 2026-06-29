@@ -23,6 +23,7 @@ readonly DEBOUNCE_SEC=5
 # --- Global State ---
 LAST_STATE="unknown"
 USM_VERSION="unknown"
+START_TIME_YYMMDD=$(date +%y%m%d)
 
 if [[ -f "$VER_FILE" ]]; then
   USM_VERSION=$(cat "$VER_FILE")
@@ -32,7 +33,11 @@ printf "uConsole Screen Manager (USM) Version: %s\n" "$USM_VERSION"
 
 # --- Helpers ---
 log() {
-  printf "[%s] %s %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$LOG_PREFIX" "$1"
+  local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $LOG_PREFIX $1"
+  printf "%s\n" "$msg"
+  if [[ -n "${LOG_FILE:-}" ]]; then
+    printf "%s\n" "$msg" >> "$LOG_FILE"
+  fi
 }
 
 notify_user() {
@@ -106,6 +111,45 @@ else
   exit 1
 fi
 
+set_log_file_var() {
+  USM_LOG_ENABLE="${USM_LOG_ENABLE:-true}"
+  if [[ "$USM_LOG_ENABLE" == "true" ]]; then
+    LOG_DIR="$HOME/.local/state/usm/logs"
+    mkdir -p "$LOG_DIR"
+    LOG_FILE="$LOG_DIR/usm_log_${START_TIME_YYMMDD}.log"
+  else
+    LOG_FILE=""
+  fi
+}
+
+set_log_file_var
+
+update_conf() {
+  local key="$1"
+  local val="$2"
+  if grep -q "^${key}=" "$CONF_FILE"; then
+    sed -i "s/^${key}=.*/${key}=\"${val}\"/" "$CONF_FILE"
+  else
+    echo "${key}=\"${val}\"" >> "$CONF_FILE"
+  fi
+}
+
+cmd_log_enable() {
+  update_conf "USM_LOG_ENABLE" "true"
+  printf "Logging enabled in %s.\n" "$CONF_FILE"
+  if systemctl --user is-active --quiet "$SVC_NAME"; then
+    systemctl --user reload "$SVC_NAME"
+  fi
+}
+
+cmd_log_disable() {
+  update_conf "USM_LOG_ENABLE" "false"
+  printf "Logging disabled in %s.\n" "$CONF_FILE"
+  if systemctl --user is-active --quiet "$SVC_NAME"; then
+    systemctl --user reload "$SVC_NAME"
+  fi
+}
+
 show_usage() {
   printf "Usage: usm [command]\n"
   printf "Commands:\n"
@@ -118,6 +162,8 @@ show_usage() {
   printf "  start        Start the USM background service\n"
   printf "  stop         Stop the USM background service\n"
   printf "  restart      Restart the USM background service\n"
+  printf "  log_enable   Enable file logging\n"
+  printf "  log_disable  Disable file logging\n"
   printf "  notify-test  Test desktop notification\n"
   printf "  version      Print version information\n"
 }
@@ -373,50 +419,88 @@ cmd_screen_dual() {
 
 
 
+handle_event_suspend() {
+  log "System is suspending (PrepareForSleep: true)"
+  touch /tmp/usm_suspending.lock
+}
+
+handle_event_resume() {
+  log "System has resumed (PrepareForSleep: false)"
+  rm -f /tmp/usm_suspending.lock
+  sleep 3
+  local current_state
+  current_state=$(check_hdmi_state)
+  log "Re-evaluating display state after resume: $current_state"
+  apply_display "$current_state"
+}
+
+handle_event_udev() {
+  if [[ -f /tmp/usm_suspending.lock ]]; then
+    log "Ignoring event due to suspend/resume"
+    return 0
+  fi
+
+  local current_time
+  current_time=$(date +%s)
+  local diff=$((current_time - last_event_time))
+
+  if (( diff < DEBOUNCE_SEC )); then
+    log "Event debounced (only ${diff}s since last event)."
+    return 0
+  fi
+
+  log "Hardware change detected. Initiating ${DEBOUNCE_SEC}s debounce wait..."
+  sleep "$DEBOUNCE_SEC"
+
+  local current_state
+  current_state=$(check_hdmi_state)
+  log "Debounce wait finished. Re-verified state: $current_state"
+
+  if [[ "$current_state" != "$LAST_STATE" ]]; then
+    last_event_time=$(date +%s)
+    apply_display "$current_state"
+  else
+    log "State unchanged after debounce. Ignored."
+  fi
+}
+
 cmd_monitor() {
+  trap 'source "$CONF_FILE"; set_log_file_var' SIGHUP
+  trap 'rm -f /tmp/usm_suspending.lock; pkill -P $$ 2>/dev/null' EXIT INT TERM
+
   log "Starting monitor daemon..."
   wait_for_compositor
   apply_display "$(check_hdmi_state)"
 
+  rm -f /tmp/usm_suspending.lock
   local last_event_time=0
 
-  udevadm monitor --subsystem=drm | while read -r line; do
-    if echo "$line" | grep -q "UDEV.*change"; then
-      local current_time
-      current_time=$(date +%s)
-      local diff=$((current_time - last_event_time))
-
-      if (( diff < DEBOUNCE_SEC )); then
-        log "Event debounced (only ${diff}s since last event)."
-        continue
-      fi
-
-      log "Hardware change detected. Initiating ${DEBOUNCE_SEC}s debounce wait..."
-      sleep "$DEBOUNCE_SEC"
-
-      local current_state
-      current_state=$(check_hdmi_state)
-      log "Debounce wait finished. Re-verified state: $current_state"
-
-      if [[ "$current_state" != "$LAST_STATE" ]]; then
-        last_event_time=$(date +%s)
-        apply_display "$current_state"
-      else
-        log "State unchanged after debounce. Ignored."
-      fi
+  while read -r line; do
+    if echo "$line" | grep -q "boolean true"; then
+      handle_event_suspend
+    elif echo "$line" | grep -q "boolean false"; then
+      handle_event_resume
+    elif echo "$line" | grep -q "UDEV.*change"; then
+      handle_event_udev
     fi
-  done
+  done < <(
+    trap 'pkill -P $BASHPID 2>/dev/null' EXIT
+    if command -v stdbuf >/dev/null 2>&1; then
+      stdbuf -oL dbus-monitor --system "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'" 2>/dev/null &
+    else
+      dbus-monitor --system "type='signal',interface='org.freedesktop.login1.Manager',member='PrepareForSleep'" 2>/dev/null &
+    fi
+    udevadm monitor --subsystem=drm 2>/dev/null &
+    wait
+  )
 }
 
 cmd_status() {
   printf "%s\n" "--- USM Status ---"
   local svc_status
-  if systemctl --user is-active --quiet "$SVC_NAME" 2>/dev/null; then
-    svc_status="Active (Running)"
-  else
-    svc_status="Inactive"
-  fi
-  printf "Background Service : %s\n" "$svc_status"
+  systemctl --user status "$SVC_NAME" \
+    -n 10 -l --no-pager 2>/dev/null \
+    || echo "(Service not found or failed to load)"
 
   printf "\nCurrent Resolutions:\n"
   wlr-randr 2>/dev/null | awk '
@@ -425,7 +509,7 @@ cmd_status() {
   ' || echo "(wlr-randr execution failed)"
 
   printf "\nRecent Service Logs:\n"
-  journalctl --user -u "$SVC_NAME" -n 10 --no-pager || echo "No logs found."
+  journalctl --user-unit="$SVC_NAME" -n 20 --no-pager || echo "No logs found."
   printf "%s\n" "------------------"
 }
 
@@ -459,6 +543,8 @@ case "$1" in
   start)       cmd_service "start" ;;
   stop)        cmd_service "stop" ;;
   restart)     cmd_service "restart" ;;
+  log_enable)  cmd_log_enable ;;
+  log_disable) cmd_log_disable ;;
   notify-test) cmd_notify_test ;;
   version)     log "Version command executed." ;;
   *)

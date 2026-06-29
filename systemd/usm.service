@@ -7,7 +7,8 @@ StartLimitIntervalSec=60
 
 [Service]
 Type=simple
-ExecStart=%h/.config/usm/usm-core.sh
+ExecStart=%h/.local/bin/usm-cli.sh monitor
+ExecReload=/bin/kill -HUP $MAINPID
 Restart=on-failure
 RestartSec=10
 
