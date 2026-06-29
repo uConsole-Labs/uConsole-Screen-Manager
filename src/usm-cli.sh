@@ -10,10 +10,17 @@ readonly LOG_PREFIX="[USM] CLI:"
 readonly DRM_PATH="/sys/class/drm"
 readonly SVC_NAME="usm.service"
 readonly SLEEP_SEC=2
+readonly NOTIFY_TIMEOUT_MS=10000
 readonly STATE_CONN="connected"
 readonly STATE_DISC="disconnected"
 
-# --- Global State & Dynamic Version Loading ---
+# --- Modes (Enum) ---
+readonly MODE_INT="int"
+readonly MODE_EXT="ext"
+readonly MODE_DUAL="dual"
+readonly DEBOUNCE_SEC=5
+
+# --- Global State ---
 LAST_STATE="unknown"
 USM_VERSION="unknown"
 
@@ -21,27 +28,25 @@ if [[ -f "$VER_FILE" ]]; then
   USM_VERSION=$(cat "$VER_FILE")
 fi
 
-# Print version banner on the VERY FIRST line for any command
 printf "uConsole Screen Manager (USM) Version: %s\n" "$USM_VERSION"
 
-# Helper for formatted output
+# --- Helpers ---
 log() {
   printf "[%s] %s %s\n" "$(date '+%Y-%m-%d %H:%M:%S')" "$LOG_PREFIX" "$1"
 }
 
-# Helper: Send desktop notification
 notify_user() {
   local msg="$1"
   if command -v notify-send >/dev/null 2>&1; then
-    notify-send "USM" "$msg" || true
+    local cmd="notify-send -t $NOTIFY_TIMEOUT_MS \"USM\" \"$msg\""
+    log "Executing: $cmd"
+    eval "$cmd" || true
   fi
 }
 
-# Helper: Check HDMI state via DRM
 check_hdmi_state() {
   local stat_dir
-  stat_dir=$(find "$DRM_PATH" -maxdepth 1 -name "card*-$USM_EXT_OUT" \
-    | head -n 1)
+  stat_dir=$(find "$DRM_PATH" -maxdepth 1 -name "card*-$USM_EXT_OUT" | head -n 1)
 
   if [[ -z "$stat_dir" ]]; then
     printf "%s\n" "$STATE_DISC"
@@ -60,16 +65,13 @@ check_hdmi_state() {
   fi
 }
 
-# Helper: Check if external monitor is physically connected
 is_ext_connected() {
   [[ "$(check_hdmi_state)" == "$STATE_CONN" ]]
 }
 
-# Helper: Verify if output is in the expected state ("yes" or "no")
 check_display_state() {
   local output="$1"
   local expected="$2"
-
   if wlr-randr | grep -A 5 "^$output" | grep -q "Enabled: yes"; then
     [[ "$expected" == "yes" ]]
   else
@@ -77,21 +79,17 @@ check_display_state() {
   fi
 }
 
-# Helper: Check if current hardware state already matches the target
 is_state_matching() {
   local target="$1"
   case "$target" in
-    ext)
-      check_display_state "$USM_INT_OUT" "no" && \
-      check_display_state "$USM_EXT_OUT" "yes"
+    "$MODE_EXT")
+      check_display_state "$USM_INT_OUT" "no" && check_display_state "$USM_EXT_OUT" "yes"
       ;;
-    int)
-      check_display_state "$USM_INT_OUT" "yes" && \
-      check_display_state "$USM_EXT_OUT" "no"
+    "$MODE_INT")
+      check_display_state "$USM_INT_OUT" "yes" && check_display_state "$USM_EXT_OUT" "no"
       ;;
-    dual)
-      check_display_state "$USM_INT_OUT" "yes" && \
-      check_display_state "$USM_EXT_OUT" "yes"
+    "$MODE_DUAL")
+      check_display_state "$USM_INT_OUT" "yes" && check_display_state "$USM_EXT_OUT" "yes"
       ;;
     *)
       return 1
@@ -99,7 +97,7 @@ is_state_matching() {
   esac
 }
 
-# Load configuration
+# --- Load config ---
 if [[ -f "$CONF_FILE" ]]; then
   source "$CONF_FILE"
 else
@@ -116,14 +114,13 @@ show_usage() {
   printf "  screen-ext   Switch output to external display only\n"
   printf "  screen-int   Switch output to internal display only\n"
   printf "  screen-dual  Switch output to both displays\n"
+  printf "  status       Print current service and display status\n"
   printf "  start        Start the USM background service\n"
   printf "  stop         Stop the USM background service\n"
   printf "  restart      Restart the USM background service\n"
   printf "  notify-test  Test desktop notification\n"
   printf "  version      Print version information\n"
 }
-
-# --- Daemon Logic ---
 
 run_hook() {
   if [[ "${USM_ENABLE_HOOKS:-false}" != "true" ]]; then
@@ -135,45 +132,6 @@ run_hook() {
   fi
 }
 
-apply_display() {
-  local target_state="$1"
-
-  if [[ "$target_state" == "$LAST_STATE" ]]; then
-    return 0
-  fi
-
-  # Determine expected logical target
-  local expected_hw="int"
-  if [[ "$target_state" == "$STATE_CONN" ]]; then
-    [[ "${USM_MODE:-single}" == "single" ]] && expected_hw="ext" || \
-      expected_hw="dual"
-  fi
-
-  # Fast-bypass on startup if hardware is already correct
-  if [[ "$LAST_STATE" == "unknown" ]] && is_state_matching "$expected_hw"; then
-    log "Initial hardware state matches '$expected_hw'. Skipping actions."
-    LAST_STATE="$target_state"
-    return 0
-  fi
-
-  log "State changed to: $target_state"
-
-  if [[ "$target_state" == "$STATE_CONN" ]]; then
-    if [[ "${USM_MODE:-single}" == "single" ]]; then
-      cmd_screen_ext || return 1
-    else
-      cmd_screen_dual || return 1
-    fi
-    run_hook "hook-plug.sh"
-
-  elif [[ "$target_state" == "$STATE_DISC" ]]; then
-    cmd_screen_int || return 1
-    run_hook "hook-unplug.sh"
-  fi
-
-  LAST_STATE="$target_state"
-}
-
 wait_for_compositor() {
   log "Waiting for Wayland compositor..."
   while ! wlr-randr >/dev/null 2>&1; do
@@ -182,190 +140,309 @@ wait_for_compositor() {
   log "Wayland compositor is ready."
 }
 
-# --- Core Logic: Hardware bandwidth workaround ---
-execute_hardware_workaround() {
-  local target="$1"
-  local ext_res=""
+apply_display() {
+  local target_state="$1"
 
-  # Idempotent bypass
-  if is_state_matching "$target"; then
-    log "Display is already in '$target' state. Skipping workaround."
+  if [[ "$target_state" == "$LAST_STATE" ]]; then
     return 0
   fi
 
-  if ! is_ext_connected; then
-    log "Error: External display is not physically connected."
-    notify_user "Hardware Error: External display disconnected."
-    return 1
+  local expected_hw="$MODE_INT"
+  if [[ "$target_state" == "$STATE_CONN" ]]; then
+    [[ "${USM_MODE:-single}" == "single" ]] && expected_hw="$MODE_EXT" || expected_hw="$MODE_DUAL"
   fi
 
+  if [[ "$LAST_STATE" == "unknown" ]] && is_state_matching "$expected_hw"; then
+    log "Initial hardware state matches '$expected_hw'. Skipping actions."
+    LAST_STATE="$target_state"
+    return 0
+  fi
+
+  log "State changed to: $target_state"
+  if [[ "$target_state" == "$STATE_CONN" ]]; then
+    if [[ "${USM_MODE:-single}" == "single" ]]; then
+      cmd_screen_ext || return 1
+    else
+      cmd_screen_dual || return 1
+    fi
+    run_hook "hook-plug.sh"
+  elif [[ "$target_state" == "$STATE_DISC" ]]; then
+    cmd_screen_int || return 1
+    run_hook "hook-unplug.sh"
+  fi
+
+  LAST_STATE="$target_state"
+}
+
+get_ext_target_res() {
   if [[ -n "${USM_EXT_RES:-}" ]]; then
-    ext_res="$USM_EXT_RES"
+    echo "$USM_EXT_RES"
   else
     local stat_dir
-    stat_dir=$(find "$DRM_PATH" -maxdepth 1 -name "card*-$USM_EXT_OUT" \
-      | head -n 1)
+    stat_dir=$(find "$DRM_PATH" -maxdepth 1 -name "card*-$USM_EXT_OUT" | head -n 1)
     if [[ -n "$stat_dir" && -f "$stat_dir/modes" ]]; then
-      ext_res=$(head -n 1 "$stat_dir/modes" 2>/dev/null || true)
+      head -n 1 "$stat_dir/modes" 2>/dev/null || true
     fi
   fi
-  log "Target external resolution: ${ext_res:-auto}"
+}
 
-  # STEP 1: Low-res sync
-  log "Step 1: Forcing low-res sync (1024x768 & 720x1280@270)..."
-  local cmd1="wlr-randr "
-  cmd1+="--output $USM_INT_OUT --on --mode 720x1280 --transform 270 --pos 0,0 "
-  cmd1+="--output $USM_EXT_OUT --on --mode 1024x768 --pos 1280,0"
+check_exact_state() {
+  local out="$1"
+  local res="$2"
+  local pos="$3"
+  local trans="$4"
 
-  if ! eval "$cmd1"; then
-    log "Error: Step 1 execution failed."
-    notify_user "Sync error: Execution failed (Step 1)."
+  local output_str
+  output_str=$(wlr-randr 2>/dev/null | awk -v out="$out" '
+    $1 == out { found=1; next }
+    /^[^ \t]/ { if (found) exit }
+    found { print }
+  ')
+
+  if ! echo "$output_str" | grep -q "Enabled: yes"; then return 1; fi
+  if ! echo "$output_str" | grep -q "${res} px.*current"; then return 1; fi
+  if ! echo "$output_str" | grep -q "Position: $pos"; then return 1; fi
+  if [[ "$trans" == "0" || "$trans" == "normal" ]]; then
+    if ! echo "$output_str" | grep -qE "Transform: (0|normal)"; then return 1; fi
+  else
+    if ! echo "$output_str" | grep -q "Transform: $trans"; then return 1; fi
+  fi
+  return 0
+}
+
+rescue_internal_display() {
+  log "Warning: Entering rescue mode. Forcing internal display ON..."
+  local cmd="wlr-randr --output $USM_INT_OUT --on --mode 720x1280 "
+  cmd+="--transform 270 --pos 0,0"
+  log "Executing: $cmd"
+  if ! eval "$cmd"; then
+    log "Critical Error: Failed to rescue internal display."
+    notify_user "Critical: Rescue failed."
     return 1
   fi
-  sleep "$SLEEP_SEC"
-  if ! check_display_state "$USM_INT_OUT" "yes" || \
-     ! check_display_state "$USM_EXT_OUT" "yes"; then
-    log "Error: Step 1 verification failed. Displays are not both ON."
-    notify_user "Sync error: Verification failed (Step 1)."
-    return 1
-  fi
+  log "Rescue successful. Internal display is ON."
+  return 0
+}
 
-  # STEP 2: Restore external resolution
-  log "Step 2: Restoring external display resolution..."
-  local cmd2="wlr-randr --output $USM_EXT_OUT --pos 1280,0"
-  [[ -n "$ext_res" ]] && cmd2+=" --mode $ext_res"
-
-  if ! eval "$cmd2"; then
-    log "Error: Step 2 execution failed."
-    notify_user "Sync error: Execution failed (Step 2)."
-    return 1
-  fi
-  sleep "$SLEEP_SEC"
-  if ! check_display_state "$USM_EXT_OUT" "yes"; then
-    log "Error: Step 2 verification failed."
-    notify_user "Sync error: Verification failed (Step 2)."
-    return 1
-  fi
-
-  # STEP 3: Finalize state
-  log "Step 3: Finalizing display state ($target)..."
-  if [[ "$target" == "ext" ]]; then
-    if ! wlr-randr --output "$USM_INT_OUT" --off; then
-      log "Error: Step 3 execution failed."
+ensure_low_res_sync() {
+  log "Step A: Verify external display (1024x768)..."
+  if ! check_exact_state "$USM_EXT_OUT" "1024x768" "1280,0" "0"; then
+    log "External display state mismatch. Applying config..."
+    local cmd="wlr-randr --output $USM_EXT_OUT --on --mode 1024x768 "
+    cmd+="--transform normal --pos 1280,0"
+    log "Executing: $cmd"
+    if ! eval "$cmd"; then
+      log "Error: External display setup failed."
+      notify_user "Error: External display setup failed."
       return 1
     fi
     sleep "$SLEEP_SEC"
-    if ! check_display_state "$USM_INT_OUT" "no" || \
-       ! check_display_state "$USM_EXT_OUT" "yes"; then
-      log "Error: Step 3 verification failed."
-      return 1
-    fi
-    notify_user "External display enabled."
-
-  elif [[ "$target" == "dual" ]]; then
-    local cmd3="wlr-randr"
-    [[ -n "${USM_EXT_SCALE:-}" ]] && \
-      cmd3+=" --output $USM_EXT_OUT --scale $USM_EXT_SCALE"
-    [[ -n "${USM_EXT_POS:-}" ]] && \
-      cmd3+=" --output $USM_EXT_OUT --pos $USM_EXT_POS"
-
-    if [[ "$cmd3" != "wlr-randr" ]]; then
-      if ! eval "$cmd3"; then
-        log "Error: Step 3 execution failed."
-        return 1
-      fi
-      sleep "$SLEEP_SEC"
-    fi
-
-    if ! check_display_state "$USM_INT_OUT" "yes" || \
-       ! check_display_state "$USM_EXT_OUT" "yes"; then
-      log "Error: Step 3 verification failed."
-      return 1
-    fi
-    notify_user "Dual display enabled."
   fi
 
-  log "Hardware workaround sequence completed successfully."
+  log "Step B: Verify internal display (720x1280)..."
+  if ! check_exact_state "$USM_INT_OUT" "720x1280" "0,0" "270"; then
+    log "Internal display state mismatch. Applying config..."
+    local cmd="wlr-randr --output $USM_INT_OUT --on --mode 720x1280 "
+    cmd+="--transform 270 --pos 0,0"
+    log "Executing: $cmd"
+    if ! eval "$cmd"; then
+      log "Error: Internal display setup failed."
+      notify_user "Error: Internal display setup failed."
+      return 1
+    fi
+    sleep "$SLEEP_SEC"
+  fi
+
+  log "Step C: Verify dual display synchronization..."
+  if ! check_exact_state "$USM_INT_OUT" "720x1280" "0,0" "270" || \
+     ! check_exact_state "$USM_EXT_OUT" "1024x768" "1280,0" "0"; then
+    log "Error: Synchronization verification failed."
+    notify_user "Error: Sync state verification failed."
+    return 1
+  fi
+  return 0
 }
 
-# --- Command Functions ---
+cmd_screen_ext() {
+  log "Switching to external display ONLY..."
+  if is_state_matching "$MODE_EXT"; then
+    log "Display is already in '$MODE_EXT' state. Skipping switch."
+    return 0
+  fi
+  if ! is_ext_connected; then
+    log "Error: External display is not connected."
+    return 1
+  fi
+
+  log "Step A: Disable internal display..."
+  local cmd_off="wlr-randr --output $USM_INT_OUT --off"
+  log "Executing: $cmd_off"
+  eval "$cmd_off" || true
+  sleep "$SLEEP_SEC"
+
+  log "Step B: Turn ON external display..."
+  local ext_res
+  ext_res=$(get_ext_target_res)
+  local cmd_on="wlr-randr --output $USM_EXT_OUT --on"
+  [[ -n "$ext_res" ]] && cmd_on+=" --mode $ext_res"
+  [[ -n "${USM_EXT_SCALE:-}" ]] && cmd_on+=" --scale $USM_EXT_SCALE"
+  [[ -n "${USM_EXT_POS:-}" ]] && cmd_on+=" --pos $USM_EXT_POS"
+
+  log "Executing: $cmd_on"
+  if ! eval "$cmd_on"; then
+    log "Error: External display setup failed. Rolling back..."
+    rescue_internal_display
+    return 1
+  fi
+  sleep "$SLEEP_SEC"
+
+  notify_user "External Display Enabled"
+  log "External display successfully enabled."
+}
+
+cmd_screen_int() {
+  log "Switching to internal display ONLY..."
+  if is_state_matching "$MODE_INT"; then
+    log "Display is already in '$MODE_INT' state. Skipping switch."
+    return 0
+  fi
+
+  log "Step A: Disable external display..."
+  local cmd_off="wlr-randr --output $USM_EXT_OUT --off"
+  log "Executing: $cmd_off"
+  eval "$cmd_off" || true
+  sleep "$SLEEP_SEC"
+
+  log "Step B: Turn ON internal display..."
+  local cmd_on="wlr-randr --output $USM_INT_OUT --on --mode 720x1280 "
+  cmd_on+="--transform 270 --pos 0,0"
+  log "Executing: $cmd_on"
+  if ! eval "$cmd_on"; then
+    log "Error: Internal display setup failed. Trying rescue..."
+    rescue_internal_display || true
+    if is_ext_connected; then
+      log "Attempting to restore external display as fallback..."
+      local cmd_ext="wlr-randr --output $USM_EXT_OUT --on"
+      log "Executing: $cmd_ext"
+      eval "$cmd_ext" || true
+    fi
+    return 1
+  fi
+  sleep "$SLEEP_SEC"
+
+  notify_user "Internal Display Enabled"
+  log "Internal display successfully enabled."
+}
+
+cmd_screen_dual() {
+  log "Switching to dual display..."
+  if is_state_matching "$MODE_DUAL"; then
+    log "Display is already in '$MODE_DUAL' state. Skipping switch."
+    return 0
+  fi
+  if ! is_ext_connected; then
+    log "Error: External display is not connected."
+    return 1
+  fi
+
+  if ! ensure_low_res_sync; then
+    log "Dual sync failed. Rolling back..."
+    rescue_internal_display
+    return 1
+  fi
+
+  log "Step D: Configure external display to target resolution..."
+  local ext_res
+  ext_res=$(get_ext_target_res)
+  local cmd="wlr-randr --output $USM_EXT_OUT"
+  [[ -n "$ext_res" ]] && cmd+=" --mode $ext_res"
+  [[ -n "${USM_EXT_SCALE:-}" ]] && cmd+=" --scale $USM_EXT_SCALE"
+  [[ -n "${USM_EXT_POS:-}" ]] && cmd+=" --pos $USM_EXT_POS"
+
+  log "Executing: $cmd"
+  if ! eval "$cmd"; then
+    log "Error: External high-res setup failed. Rolling back..."
+    rescue_internal_display
+    return 1
+  fi
+  sleep "$SLEEP_SEC"
+
+  notify_user "Dual Display Enabled"
+  log "Dual display successfully enabled."
+}
+
+
 
 cmd_monitor() {
   log "Starting monitor daemon..."
   wait_for_compositor
   apply_display "$(check_hdmi_state)"
 
+  local last_event_time=0
+
   udevadm monitor --subsystem=drm | while read -r line; do
     if echo "$line" | grep -q "UDEV.*change"; then
-      sleep 1 # Debounce delay
-      apply_display "$(check_hdmi_state)"
+      local current_time
+      current_time=$(date +%s)
+      local diff=$((current_time - last_event_time))
+
+      if (( diff < DEBOUNCE_SEC )); then
+        log "Event debounced (only ${diff}s since last event)."
+        continue
+      fi
+
+      log "Hardware change detected. Initiating ${DEBOUNCE_SEC}s debounce wait..."
+      sleep "$DEBOUNCE_SEC"
+
+      local current_state
+      current_state=$(check_hdmi_state)
+      log "Debounce wait finished. Re-verified state: $current_state"
+
+      if [[ "$current_state" != "$LAST_STATE" ]]; then
+        last_event_time=$(date +%s)
+        apply_display "$current_state"
+      else
+        log "State unchanged after debounce. Ignored."
+      fi
     fi
   done
 }
 
-cmd_screen_ext() {
-  execute_hardware_workaround "ext"
-}
-
-cmd_screen_dual() {
-  execute_hardware_workaround "dual"
-}
-
-cmd_screen_int() {
-  log "Switching to internal display ONLY..."
-
-  # Idempotent bypass
-  if is_state_matching "int"; then
-    log "Display is already in 'int' state. Skipping switch."
-    return 0
+cmd_status() {
+  printf "%s\n" "--- USM Status ---"
+  local svc_status
+  if systemctl --user is-active --quiet "$SVC_NAME" 2>/dev/null; then
+    svc_status="Active (Running)"
+  else
+    svc_status="Inactive"
   fi
+  printf "Background Service : %s\n" "$svc_status"
 
-  local cmd="wlr-randr --output $USM_INT_OUT --on --mode 720x1280 "
-  cmd+="--transform 270 --pos 0,0"
+  printf "\nCurrent Resolutions:\n"
+  wlr-randr 2>/dev/null | awk '
+    /^[^ ]/ { out=$1 }
+    /current/ { print out ": " $1 " " $2 }
+  ' || echo "(wlr-randr execution failed)"
 
-  if is_ext_connected; then
-    log "External display is connected. Adding explicit off command..."
-    cmd+=" --output $USM_EXT_OUT --off"
-  fi
-
-  log "Executing: $cmd"
-  if ! eval "$cmd"; then
-    log "Error: Failed to enable internal display."
-    notify_user "Error: Internal display config failed."
-    return 1
-  fi
-  sleep "$SLEEP_SEC"
-
-  if ! check_display_state "$USM_INT_OUT" "yes"; then
-    log "Error: Internal display state verification failed."
-    notify_user "Error: Internal display verification failed."
-    return 1
-  fi
-
-  log "Internal display successfully enabled."
-  notify_user "Internal display enabled."
+  printf "\nRecent Service Logs:\n"
+  journalctl --user -u "$SVC_NAME" -n 10 --no-pager || echo "No logs found."
+  printf "%s\n" "------------------"
 }
 
 cmd_read_conf() {
-  log "Reading configuration from $CONF_FILE:"
   cat "$CONF_FILE"
 }
 
 cmd_service() {
   local action="$1"
-  log "Executing systemctl --user $action $SVC_NAME..."
   systemctl --user "$action" "$SVC_NAME"
   log "Service $action completed."
-  notify_user "Service $action completed."
 }
 
 cmd_notify_test() {
-  log "Sending test notification..."
   notify_user "This is a test notification."
   log "Notification sent."
 }
-
-# --- Main Logic ---
 
 if (( $# == 0 )); then
   show_usage
@@ -378,6 +455,7 @@ case "$1" in
   screen-ext)  cmd_screen_ext ;;
   screen-int)  cmd_screen_int ;;
   screen-dual) cmd_screen_dual ;;
+  status)      cmd_status ;;
   start)       cmd_service "start" ;;
   stop)        cmd_service "stop" ;;
   restart)     cmd_service "restart" ;;

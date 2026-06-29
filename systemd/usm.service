@@ -2,12 +2,14 @@
 Description=USM Background Daemon
 After=graphical-session.target
 ConditionEnvironment=WAYLAND_DISPLAY
+StartLimitBurst=5
+StartLimitIntervalSec=60
 
 [Service]
 Type=simple
 ExecStart=%h/.config/usm/usm-core.sh
-Restart=always
-RestartSec=3
+Restart=on-failure
+RestartSec=10
 
 [Install]
 WantedBy=default.target

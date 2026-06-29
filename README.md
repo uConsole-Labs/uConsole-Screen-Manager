@@ -29,7 +29,7 @@ the default config. You can safely delete the cloned repo after installation.
 
 * **Zero CPU Polling:** Uses kernel DRM events for instant switching.
 * **Idempotent State:** Silent boots and no screen flickering on redundancy.
-* **Hardware Workaround:** Mitigates VC4 bandwidth exhaustion on Wayland.
+* **Hardware Workaround:** Dual-track strategy mitigates VC4 bandwidth bugs.
 * **EDID Fail-Safe:** Verifies physical handshake before disabling screens.
 
 ## 💻 Commands
@@ -150,7 +150,7 @@ cd uConsole-Screen-Manager
 
 * **零 CPU 消耗：** 直接監聽 Linux DRM 事件，平時背景零佔用。
 * **冪等性防護：** 開機靜默啟動，避免重複觸發導致的畫面閃爍。
-* **硬體頻寬解套：** 獨家 3 步驟切換序列，完美避開 VC4 晶片頻寬崩潰問題。
+* **硬體頻寬解套：** 循序切換與同步雙軌策略，具備自動黑屏救援機制，避開頻寬問題。
 * **EDID 防呆：** 嚴格驗證實體連線，徹底避免「兩邊都不亮」的死機窘境。
 
 ## 💻 終端機指令 (Commands)
