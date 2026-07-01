@@ -1,5 +1,5 @@
 [Unit]
-Description=USM Background Daemon
+Description=uConsole Screen Manager Daemon
 After=graphical-session.target
 ConditionEnvironment=WAYLAND_DISPLAY
 StartLimitBurst=5
