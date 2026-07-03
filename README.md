@@ -44,6 +44,9 @@ Type `usm` in your terminal to see all available commands:
 * `usm start/stop`  : Control the USM background service.
 * `usm restart`     : Restart the USM background service.
 * `usm notify-test` : Test desktop notifications (requires mako).
+* `usm hdmi-audio-on` : Enable HDMI audio devices.
+* `usm hdmi-audio-off`: Disable HDMI audio devices (prevents kernel crash).
+* `usm hdmi-audio-state`: Print current state of HDMI audio devices.
 * `usm version`     : Print version information.
 * `usm read-conf`   : Print the current usm.conf.
 
@@ -56,6 +59,7 @@ The config file is located at `~/.config/usm/usm.conf`:
 * `USM_EXT_SCALE`: Fractional scaling for external monitors (e.g., `"1.5"`).
 * `USM_EXT_POS`: X,Y coordinates for dual mode (e.g., `"1920,0"`).
 * `USM_ENABLE_HOOKS`: Set `"true"` to run custom plug/unplug shell scripts.
+* `USM_HDMI_AUDIO_DEFAULT_STATE`: Set to `"off"` or `"on"`.
 
 ## 🐛 Debugging & Troubleshooting
 
@@ -164,6 +168,9 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 * `usm start/stop`  : 啟動或停止 USM 背景服務。
 * `usm restart`     : 重新啟動 USM 背景服務。
 * `usm notify-test` : 測試桌面通知功能 (需安裝 mako)。
+* `usm hdmi-audio-on` : 開啟 HDMI 音效輸出。
+* `usm hdmi-audio-off`: 關閉 HDMI 音效輸出 (能預防拔插當機 Bug)。
+* `usm hdmi-audio-state`: 顯示目前的 HDMI 音效狀態。
 * `usm version`     : 顯示當前版本號碼。
 * `usm read-conf`   : 印出目前的設定檔內容。
 
@@ -176,6 +183,7 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 * `USM_EXT_SCALE`：設定外接螢幕的畫面縮放比例 (如 `"1.5"`)。
 * `USM_EXT_POS`：雙螢幕模式下的外接螢幕 X,Y 座標 (如 `"1920,0"`)。
 * `USM_ENABLE_HOOKS`：設為 `"true"` 可在切換時觸發自訂 Shell 腳本。
+* `USM_HDMI_AUDIO_DEFAULT_STATE`：啟動時 HDMI 音效的預設狀態 (`"off"` 或 `"on"`)。
 
 ## 🐛 除錯與故障排除 (Debugging)
 

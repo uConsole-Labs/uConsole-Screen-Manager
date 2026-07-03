@@ -129,6 +129,23 @@ completing the display setup, USM checks for the existence of `hook-plug.sh`
 or `hook-unplug.sh`. If executable, these scripts are triggered in the
 background to prevent blocking the main event loop.
 
+### G. HDMI Audio & Kernel Crash Prevention
+
+The Raspberry Pi OS `vc4-hdmi` driver is known to cause kernel panics
+when a display is hotplugged while the audio subsystem (PipeWire) holds
+the audio device active. To prevent these fatal crashes, USM introduces
+an asynchronous audio management layer.
+
+1. **Async Initialization**: On startup, USM launches a background
+   process (`init_hdmi_audio_default_async`) that waits up to 10 seconds
+   for PipeWire to initialize. Once ready, it automatically applies the
+   safe state defined by `USM_HDMI_AUDIO_DEFAULT_STATE` (defaulting to
+   `"off"`). This stops the kernel from crashing during boot or hotplugs.
+2. **Dynamic Command Switching**: Instead of using raw `pw-cli` commands,
+   users can seamlessly toggle the Digital Stereo profile on the fly.
+   Running `usm hdmi-audio-on` safely enables audio for media consumption,
+   and `usm hdmi-audio-off` disables it before unplugging the display.
+
 ---
 
 # 系統架構與設計文件 (Traditional Chinese)
@@ -245,3 +262,18 @@ Raspberry Pi CM4 的 VC4 KMS 驅動在面臨原子提交 (Atomic Commit) 時，
 USM 允許使用者透過外部腳本執行自訂操作。在完成螢幕切換後，
 USM 會檢查 `hook-plug.sh` 或 `hook-unplug.sh` 是否存在。
 若具備執行權限，腳本會於背景觸發，確保不阻塞主監聽迴圈。
+
+### G. HDMI 音效管理與核心崩潰防護 (Audio & Crash Prevention)
+
+Raspberry Pi OS 的 `vc4-hdmi` 驅動存在一個已知的硬體缺陷：當 PipeWire 音效
+子系統正佔用 HDMI 音訊設備時，進行螢幕熱插拔極易引發核心崩潰 (Kernel Panic)。
+為了防堵這個致命錯誤，USM 導入了一套非同步的音效管理防護層。
+
+1. **非同步初始化 (Async Initialization)**：開機時，USM 會啟動一個背景進程
+   (`init_hdmi_audio_default_async`)，聰明地等待最高 10 秒直到 PipeWire
+   就緒。接著，它會自動套用設定檔中的安全預設值 (預設為 `"off"`)，從源頭
+   徹底根除開機與熱插拔時的當機風險。
+2. **動態指令切換 (Dynamic Command Switching)**：使用者無須學習複雜的底層
+   `pw-cli` 操作。當需要享受影音時，只需執行 `usm hdmi-audio-on` 即可安全
+   喚醒音效 (Digital Stereo)；而在拔除螢幕前，執行 `usm hdmi-audio-off`
+   即可安全釋放佔用，保障系統穩定。

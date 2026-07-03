@@ -1,6 +1,7 @@
 [Unit]
 Description=uConsole Screen Manager Daemon
 After=graphical-session.target
+After=pipewire.service
 ConditionEnvironment=WAYLAND_DISPLAY
 StartLimitBurst=5
 StartLimitIntervalSec=60
