@@ -148,6 +148,22 @@ an asynchronous audio management layer.
 
 ---
 
+
+### Custom Hooks Architecture
+USM exposes a lightweight hooking mechanism. By placing shell scripts in `~/.config/usm/hooks/`, users can hook into four distinct lifecycle phases:
+1.  **Daemon Start** (`usm_hook_usm_start.sh`)
+2.  **Daemon Stop/Exit** (`usm_hook_usm_stop.sh`)
+3.  **Hardware Plug** (`usm_hook_hdmi_plug.sh`)
+4.  **Hardware Unplug** (`usm_hook_hdmi_unplug.sh`)
+
+These scripts run non-blocking in the background, ensuring the main event loop (`dbus-monitor`/`udevadm`) is never obstructed by slow user code.
+*Note: The `make install` (or `install.sh`) script automatically grants `chmod +x` execution permissions to these template scripts when copying them to the user's config directory.*
+
+### Swayidle Lifecycle Management
+Swayidle logic adheres to the Single Responsibility Principle (SRP):
+*   Hardware state transitions (Plug/Unplug) evaluate environment constraints and call `start_swayidle` / `stop_swayidle`.
+*   Daemon termination cleanly delegates to `cleanup_on_exit`, running hooks and resetting swayidle to the default background state.
+
 # 系統架構與設計文件 (Traditional Chinese)
 
 本文件說明 uConsole Screen Manager (USM) 的底層技術設計與邏輯，
@@ -277,3 +293,19 @@ Raspberry Pi OS 的 `vc4-hdmi` 驅動存在一個已知的硬體缺陷：當 Pip
    `pw-cli` 操作。當需要享受影音時，只需執行 `usm hdmi-audio-on` 即可安全
    喚醒音效 (Digital Stereo)；而在拔除螢幕前，執行 `usm hdmi-audio-off`
    即可安全釋放佔用，保障系統穩定。
+
+
+### 自定義腳本架構 (Custom Hooks Architecture)
+USM 提供輕量級的 Hook 機制。使用者只需將 shell 腳本放置於 `~/.config/usm/hooks/` 中，即可介入以下四個生命週期階段：
+1.  **守護行程啟動 (Daemon Start)** (`usm_hook_usm_start.sh`)
+2.  **守護行程停止/退出 (Daemon Stop/Exit)** (`usm_hook_usm_stop.sh`)
+3.  **硬體插入 (Hardware Plug)** (`usm_hook_hdmi_plug.sh`)
+4.  **硬體拔除 (Hardware Unplug)** (`usm_hook_hdmi_unplug.sh`)
+
+所有 Hook 腳本皆在背景以非阻塞（Non-blocking）模式執行，確保 `dbus-monitor`/`udevadm` 的主事件迴圈不會被耗時的使用者程式碼所阻塞。
+*備註：在執行安裝腳本 (`install.sh`) 時，系統會自動賦予複製到使用者設定檔目錄下的樣板腳本 `chmod +x` 的執行權限。*
+
+### Swayidle 生命週期管理
+Swayidle 邏輯嚴格遵循單一責任原則（SRP）：
+*   **硬體狀態轉換**（插入/拔除）負責評估環境限制，並呼叫 `start_swayidle` 或 `stop_swayidle`。
+*   **服務終止**則將清理工作乾淨俐落地委派給 `cleanup_on_exit`，在執行停止 Hooks 後，將 Swayidle 還原至預設的背景狀態。

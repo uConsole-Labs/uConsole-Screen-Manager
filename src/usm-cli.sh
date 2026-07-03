@@ -11,8 +11,12 @@ readonly DRM_PATH="/sys/class/drm"
 readonly SVC_NAME="usm.service"
 readonly SLEEP_SEC=2
 readonly NOTIFY_TIMEOUT_MS=10000
-readonly STATE_CONN="connected"
-readonly STATE_DISC="disconnected"
+readonly STATE_HDMI_CONN="connected"
+readonly STATE_HDMI_DISC="disconnected"
+readonly HOOK_HDMI_PLUG="usm_hook_hdmi_plug.sh"
+readonly HOOK_HDMI_UNPLUG="usm_hook_hdmi_unplug.sh"
+readonly HOOK_USM_START="usm_hook_usm_start.sh"
+readonly HOOK_USM_STOP="usm_hook_usm_stop.sh"
 
 # --- Modes (Enum) ---
 readonly MODE_INT="int"
@@ -111,8 +115,8 @@ notify_user() {
 # Globals:
 #   DRM_PATH
 #   SCREEN_OUT_EXT
-#   STATE_CONN
-#   STATE_DISC
+#   STATE_HDMI_CONN
+#   STATE_HDMI_DISC
 # Arguments:
 #   None
 # Outputs:
@@ -129,7 +133,7 @@ check_hdmi_state() {
   )
 
   if [[ -z "$stat_dir" ]]; then
-    printf "%s\n" "$STATE_DISC"
+    printf "%s\n" "$STATE_HDMI_DISC"
     return
   fi
 
@@ -138,10 +142,10 @@ check_hdmi_state() {
   status=$(cat "$stat_dir/status" 2>/dev/null || echo "disconnected")
   edid_size=$(wc -c < "$stat_dir/edid" 2>/dev/null || echo "0")
 
-  if [[ "$status" == "$STATE_CONN" ]] && (( edid_size > 0 )); then
-    printf "%s\n" "$STATE_CONN"
+  if [[ "$status" == "$STATE_HDMI_CONN" ]] && (( edid_size > 0 )); then
+    printf "%s\n" "$STATE_HDMI_CONN"
   else
-    printf "%s\n" "$STATE_DISC"
+    printf "%s\n" "$STATE_HDMI_DISC"
   fi
 }
 
@@ -152,7 +156,7 @@ check_hdmi_state() {
 # false (exit 1) otherwise.
 #
 # Globals:
-#   STATE_CONN
+#   STATE_HDMI_CONN
 # Arguments:
 #   None
 # Outputs:
@@ -161,7 +165,7 @@ check_hdmi_state() {
 #   0 if connected, 1 otherwise.
 # ==============================================================================
 is_ext_connected() {
-  [[ "$(check_hdmi_state)" == "$STATE_CONN" ]]
+  [[ "$(check_hdmi_state)" == "$STATE_HDMI_CONN" ]]
 }
 
 # ==============================================================================
@@ -385,6 +389,8 @@ show_usage() {
   printf "  screen-int   Switch output to internal display only\n"
   printf "  screen-ext   Switch output to external display only\n"
   printf "  screen-dual  Switch output to both displays\n"
+  printf "  swayidle_enable  Enables swayidle by reading autostart config.\n"
+  printf "  swayidle_disable Disables swayidle by terminating its process.\n"
   printf "  status       Print current service and display status\n"
   printf "  start        Start the USM background service\n"
   printf "  stop         Stop the USM background service\n"
@@ -405,7 +411,7 @@ show_usage() {
 # script file exists and is executable.
 #
 # Globals:
-#   USM_ENABLE_HOOKS
+#   USM_HOOKS_ENABLE
 # Arguments:
 #   $1 - The filename of the hook script (e.g. hook-plug.sh).
 # Outputs:
@@ -414,10 +420,10 @@ show_usage() {
 #   0 on success.
 # ==============================================================================
 run_hook() {
-  if [[ "${USM_ENABLE_HOOKS:-false}" != "true" ]]; then
+  if [[ "${USM_HOOKS_ENABLE:-false}" != "true" ]]; then
     return 0
   fi
-  local hook_file="$HOME/.config/usm/$1"
+  local hook_file="$HOME/.config/usm/hooks/$1"
   if [[ -x "$hook_file" ]]; then
     "$hook_file" &
   fi
@@ -563,8 +569,8 @@ exec_wlr_randr() {
 #   MODE_INT
 #   MODE_EXT
 #   MODE_DUAL
-#   STATE_CONN
-#   STATE_DISC
+#   STATE_HDMI_CONN
+#   STATE_HDMI_DISC
 #   USM_MODE
 # Arguments:
 #   None
@@ -574,6 +580,107 @@ exec_wlr_randr() {
 #   0 on success or if no changes are needed. Always returns 0 to prevent
 #   set -e from terminating the monitor daemon.
 # ==============================================================================
+# ==============================================================================
+# stop_swayidle
+#
+# Terminates the swayidle process if it is currently running.
+#
+# Globals:
+#   None
+# Arguments:
+#   None
+# Outputs:
+#   Writes execution logs to stdout/log file.
+# Returns:
+#   0 on success.
+# ==============================================================================
+stop_swayidle() {
+  if ! pgrep -x "swayidle" >/dev/null 2>&1; then
+    log "swayidle not running"
+    return 0
+  fi
+  pkill -x "swayidle" || true
+  log "swayidle killed"
+}
+
+# ==============================================================================
+# start_swayidle
+#
+# Starts the swayidle process by extracting its command from the autostart
+# configuration file, provided it is not already running.
+#
+# Globals:
+#   None
+# Arguments:
+#   None
+# Outputs:
+#   Writes execution logs to stdout/log file.
+# Returns:
+#   0 on success.
+# ==============================================================================
+start_swayidle() {
+  if pgrep -x "swayidle" >/dev/null 2>&1; then
+    log "swayidle already running"
+    return 0
+  fi
+
+  local autostart_file="$HOME/.config/labwc/autostart"
+  if [[ ! -f "$autostart_file" ]]; then
+    log "Autostart file $autostart_file not found"
+    return 0
+  fi
+
+  local swayidle_cmd
+  swayidle_cmd=$(
+    sed -n '/^[ \t]*swayidle/{:a; /\\$/{N; s/\\\n/ /; ba}; p; q}' \
+      "$autostart_file"
+  )
+  if [[ -z "$swayidle_cmd" ]]; then
+    log "No swayidle command found in $autostart_file"
+    return 0
+  fi
+
+  log "Executing via subshell: $swayidle_cmd"
+  bash -c "$swayidle_cmd" &
+}
+
+# ==============================================================================
+# manage_swayidle
+#
+# Manages the swayidle process based on HDMI state. Kills swayidle when HDMI
+# is connected, and starts it when disconnected.
+#
+# Globals:
+#   USM_HDMI_DISABLE_SWAYIDLE
+#   STATE_HDMI_CONN
+#   STATE_HDMI_DISC
+# Arguments:
+#   $1 - The current HDMI state.
+# Outputs:
+#   Writes execution logs to stdout/log file.
+# Returns:
+#   0 on success.
+# ==============================================================================
+manage_swayidle() {
+  local hdmi_state="$1"
+
+  if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" != "true" ]]; then
+    return 0
+  fi
+
+  if [[ "$hdmi_state" == "$STATE_HDMI_CONN" ]]; then
+    log "HDMI connected: stopping swayidle"
+    stop_swayidle
+    return 0
+  fi
+
+  if [[ "$hdmi_state" == "$STATE_HDMI_DISC" ]]; then
+    log "HDMI disconnected: starting swayidle"
+    start_swayidle
+    return 0
+  fi
+}
+
 update_display_by_hdmi_state() {
   local current_hdmi_state
   current_hdmi_state=$(check_hdmi_state)
@@ -583,9 +690,11 @@ update_display_by_hdmi_state() {
     return 0
   fi
 
+  manage_swayidle "$current_hdmi_state"
+
   # 2. Find the needed screen mode
   local target_screen_mode="$MODE_INT"
-  if [[ "$current_hdmi_state" == "$STATE_CONN" ]]; then
+  if [[ "$current_hdmi_state" == "$STATE_HDMI_CONN" ]]; then
     if [[ "${USM_MODE:-single}" == "single" ]]; then
       target_screen_mode="$MODE_EXT"
     else
@@ -607,16 +716,16 @@ update_display_by_hdmi_state() {
   local target_cmd=""
   local hook_name=""
 
-  if [[ "$current_hdmi_state" == "$STATE_CONN" ]]; then
+  if [[ "$current_hdmi_state" == "$STATE_HDMI_CONN" ]]; then
     if [[ "${USM_MODE:-single}" == "single" ]]; then
       target_cmd="cmd_screen_ext"
     else
       target_cmd="cmd_screen_dual"
     fi
-    hook_name="hook-plug.sh"
-  elif [[ "$current_hdmi_state" == "$STATE_DISC" ]]; then
+    hook_name="$HOOK_HDMI_PLUG"
+  elif [[ "$current_hdmi_state" == "$STATE_HDMI_DISC" ]]; then
     target_cmd="cmd_screen_int"
-    hook_name="hook-unplug.sh"
+    hook_name="$HOOK_HDMI_UNPLUG"
   fi
 
   if [[ -n "$target_cmd" ]]; then
@@ -1106,12 +1215,38 @@ init_hdmi_audio_default_async() {
 # Returns:
 #   Does not return under normal execution.
 # ==============================================================================
+# ==============================================================================
+# cleanup_on_exit
+#
+# Cleans up resources when the monitor daemon is terminating. Removes the
+# suspending lock file, kills all child processes, and restores swayidle.
+#
+# Globals:
+#   USM_HDMI_DISABLE_SWAYIDLE
+# Arguments:
+#   None
+# Outputs:
+#   Writes execution logs to stdout/log file.
+# Returns:
+#   0 on success.
+# ==============================================================================
+cleanup_on_exit() {
+  log "Monitor daemon terminating. Running cleanup..."
+  run_hook "$HOOK_USM_STOP"
+  rm -f /tmp/usm_suspending.lock
+  pkill -P $$ 2>/dev/null || true
+  if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" == "true" ]]; then
+    log "Service exiting: restoring swayidle"
+    start_swayidle
+  fi
+}
+
 cmd_monitor() {
   trap 'source "$CONF_FILE"; set_log_file_var' SIGHUP
-  trap 'rm -f /tmp/usm_suspending.lock; pkill -P $$ 2>/dev/null' \
-    EXIT INT TERM
+  trap 'cleanup_on_exit' EXIT INT TERM
 
   log "Starting monitor daemon..."
+  run_hook "$HOOK_USM_START"
   wait_for_compositor
   update_display_by_hdmi_state
 
@@ -1252,6 +1387,8 @@ case "$1" in
   screen-ext)  cmd_screen_ext ;;
   screen-int)  cmd_screen_int ;;
   screen-dual) cmd_screen_dual ;;
+  swayidle_enable) start_swayidle ;;
+  swayidle_disable) stop_swayidle ;;
   status)      cmd_status ;;
   start)       cmd_service "start" ;;
   stop)        cmd_service "stop" ;;

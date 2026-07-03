@@ -99,6 +99,17 @@ fi
 
 cp "systemd/$FILE_SVC" "$SYS_DIR/$FILE_SVC"
 
+# Install hooks
+mkdir -p "$USM_DIR/hooks"
+for hook in src/hooks/*.sh; do
+  hook_name=$(basename "$hook")
+  dest="$USM_DIR/hooks/$hook_name"
+  if [[ ! -f "$dest" ]]; then
+    cp "$hook" "$dest"
+    chmod +x "$dest"
+  fi
+done
+
 # Inject or update the bash alias
 if grep -q "alias usm=" "$BASHRC"; then
   sed -i "s|alias usm=.*|$ALIAS_CMD|" "$BASHRC"
@@ -123,7 +134,14 @@ printf "%s Uninstalling USM...\n" "\$LOG_PREFIX"
 systemctl --user disable --now $FILE_SVC || true
 rm -f "\$HOME/.config/systemd/user/$FILE_SVC"
 systemctl --user daemon-reload
-rm -rf "\$HOME/.config/usm"
+
+read -r -p "Remove config/hooks in \$HOME/.config/usm? [y/N] " rm_conf
+if [[ "\$rm_conf" =~ ^[Yy]\$ ]]; then
+  rm -rf "\$HOME/.config/usm"
+else
+  rm -f "\$HOME/.config/usm/$FILE_VER"
+  printf "%s User configurations and hooks retained.\n" "\$LOG_PREFIX"
+fi
 sed -i '/alias usm=/d' "\$HOME/.bashrc"
 sed -i "/restart $FILE_SVC/d" "\$HOME/.config/labwc/autostart" || true
 rm -f "\$HOME/.local/bin/$FILE_CLI"
