@@ -51,6 +51,7 @@ readonly SCREEN_POS_EXT="1280,0"
 LAST_STATE="unknown"
 USM_VERSION="unknown"
 START_TIME_YYMMDD=$(date +%y%m%d)
+LAST_EVENT_TIME=0
 
 if [[ -f "$VER_FILE" ]]; then
   USM_VERSION=$(cat "$VER_FILE")
@@ -70,14 +71,15 @@ printf "uConsole Screen Manager (USM) Version: %s\n" "$USM_VERSION"
 #   LOG_PREFIX
 #   LOG_FILE
 # Arguments:
-#   $1 - The message text to log.
+#   $1 - message: The message text to log.
 # Outputs:
 #   Writes the message to stdout and LOG_FILE.
 # Returns:
 #   0 on success.
 # ==============================================================================
 log() {
-  local msg="[$(date '+%Y-%m-%d %H:%M:%S')] $LOG_PREFIX $1"
+  local msg
+  msg="[$(date '+%Y-%m-%d %H:%M:%S')] $LOG_PREFIX $1"
   printf "%s\n" "$msg"
   if [[ -n "${LOG_FILE:-}" ]]; then
     printf "%s\n" "$msg" >> "$LOG_FILE"
@@ -93,7 +95,7 @@ log() {
 # Globals:
 #   NOTIFY_TIMEOUT_MS
 # Arguments:
-#   $1 - The message text to display.
+#   $1 - message: The message text to display.
 # Outputs:
 #   Executes notify-send command.
 # Returns:
@@ -177,8 +179,8 @@ is_ext_connected() {
 # Globals:
 #   None
 # Arguments:
-#   $1 - The output name (e.g. DSI-2, HDMI-A-1).
-#   $2 - "yes" to expect enabled, "no" to expect disabled.
+#   $1 - output: The output name (e.g. DSI-2, HDMI-A-1).
+#   $2 - expected: "yes" to expect enabled, "no" to expect disabled.
 # Outputs:
 #   None
 # Returns:
@@ -207,7 +209,7 @@ check_display_state() {
 #   SCREEN_OUT_INT
 #   SCREEN_OUT_EXT
 # Arguments:
-#   $1 - Target mode: int, ext, or dual.
+#   $1 - target: Target mode: int, ext, or dual.
 # Outputs:
 #   None
 # Returns:
@@ -233,15 +235,6 @@ is_state_matching() {
       ;;
   esac
 }
-
-# --- Load config ---
-if [[ -f "$CONF_FILE" ]]; then
-  source "$CONF_FILE"
-else
-  log "Error: Configuration file not found at $CONF_FILE"
-  notify_user "Error: Configuration file not found."
-  exit 1
-fi
 
 # ==============================================================================
 # set_log_file_var
@@ -273,8 +266,6 @@ set_log_file_var() {
   fi
 }
 
-set_log_file_var
-
 # ==============================================================================
 # update_conf
 #
@@ -285,8 +276,8 @@ set_log_file_var
 # Globals:
 #   CONF_FILE
 # Arguments:
-#   $1 - The configuration key name.
-#   $2 - The value to set.
+#   $1 - key: The configuration key name.
+#   $2 - val: The value to set.
 # Outputs:
 #   Modifies the configuration file.
 # Returns:
@@ -413,7 +404,7 @@ show_usage() {
 # Globals:
 #   USM_HOOKS_ENABLE
 # Arguments:
-#   $1 - The filename of the hook script (e.g. hook-plug.sh).
+#   $1 - hook_name: The filename of the hook script.
 # Outputs:
 #   None
 # Returns:
@@ -425,7 +416,8 @@ run_hook() {
   fi
   local hook_file="$HOME/.config/usm/hooks/$1"
   if [[ -x "$hook_file" ]]; then
-    "$hook_file" &
+    log "Executing hook: $1"
+    "$hook_file"
   fi
 }
 
@@ -640,8 +632,12 @@ start_swayidle() {
     return 0
   fi
 
-  log "Executing via subshell: $swayidle_cmd"
-  bash -c "$swayidle_cmd" &
+  log "Executing via systemd-run: $swayidle_cmd"
+  if command -v systemd-run >/dev/null 2>&1; then
+    systemd-run --user --background bash -c "$swayidle_cmd" 2>/dev/null
+  else
+    nohup bash -c "$swayidle_cmd" >/dev/null 2>&1 &
+  fi
 }
 
 # ==============================================================================
@@ -655,7 +651,7 @@ start_swayidle() {
 #   STATE_HDMI_CONN
 #   STATE_HDMI_DISC
 # Arguments:
-#   $1 - The current HDMI state.
+#   $1 - hdmi_state: The current HDMI state.
 # Outputs:
 #   Writes execution logs to stdout/log file.
 # Returns:
@@ -913,7 +909,7 @@ cmd_screen_dual() {
 # ==============================================================================
 handle_event_suspend() {
   log "System is suspending (PrepareForSleep: true)"
-  touch /tmp/usm_suspending.lock
+  touch "$USM_RUN_DIR/usm_suspending.lock"
 }
 
 # ==============================================================================
@@ -934,7 +930,7 @@ handle_event_suspend() {
 # ==============================================================================
 handle_event_resume() {
   log "System has resumed (PrepareForSleep: false)"
-  rm -f /tmp/usm_suspending.lock
+  rm -f "$USM_RUN_DIR/usm_suspending.lock"
   sleep 3
   log "Re-evaluating display state after resume"
   update_display_by_hdmi_state
@@ -958,14 +954,14 @@ handle_event_resume() {
 #   0 on success.
 # ==============================================================================
 handle_event_udev() {
-  if [[ -f /tmp/usm_suspending.lock ]]; then
+  if [[ -f "$USM_RUN_DIR/usm_suspending.lock" ]]; then
     log "Ignoring event due to suspend/resume"
     return 0
   fi
 
   local current_time
   current_time=$(date +%s)
-  local diff=$((current_time - last_event_time))
+  local diff=$((current_time - LAST_EVENT_TIME))
 
   if (( diff < DEBOUNCE_SEC )); then
     log "Event debounced (only ${diff}s since last event)."
@@ -980,7 +976,7 @@ handle_event_udev() {
   log "Debounce wait finished. Re-verified state: $current_state"
 
   if [[ "$current_state" != "$LAST_STATE" ]]; then
-    last_event_time=$(date +%s)
+    LAST_EVENT_TIME=$(date +%s)
     update_display_by_hdmi_state
   else
     log "State unchanged after debounce. Ignored."
@@ -1016,7 +1012,7 @@ get_hdmi_audio_device_ids() {
 # Globals:
 #   None
 # Arguments:
-#   $1 - The PipeWire device ID to query.
+#   $1 - id: The PipeWire device ID to query.
 # Outputs:
 #   Writes the active profile name string to stdout.
 # Returns:
@@ -1233,16 +1229,46 @@ init_hdmi_audio_default_async() {
 cleanup_on_exit() {
   log "Monitor daemon terminating. Running cleanup..."
   run_hook "$HOOK_USM_STOP"
-  rm -f /tmp/usm_suspending.lock
-  pkill -P $$ 2>/dev/null || true
+  rm -f "$USM_RUN_DIR/usm_suspending.lock"
+  
+  [[ -n "$DBUS_PID" ]] && kill "$DBUS_PID" 2>/dev/null
+  [[ -n "$UDEV_PID" ]] && kill "$UDEV_PID" 2>/dev/null
+  rm -f "$FIFO_PATH" 2>/dev/null
+
   if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" == "true" ]]; then
     log "Service exiting: restoring swayidle"
     start_swayidle
   fi
 }
 
+# ==============================================================================
+# reload_config
+#
+# Reloads the configuration file and updates the log file variable.
+# Called upon receiving a SIGHUP signal.
+#
+# Globals:
+#   CONF_FILE
+# Arguments:
+#   None
+# Outputs:
+#   Writes execution logs to stdout/log file.
+# Returns:
+#   0 on success.
+# ==============================================================================
+reload_config() {
+  if [[ -f "$CONF_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$CONF_FILE"
+    set_log_file_var
+    log "Configuration reloaded via SIGHUP."
+  else
+    log "Warning: SIGHUP received, but $CONF_FILE is missing. Ignored."
+  fi
+}
+
 cmd_monitor() {
-  trap 'source "$CONF_FILE"; set_log_file_var' SIGHUP
+  trap 'reload_config' SIGHUP
   trap 'cleanup_on_exit' EXIT INT TERM
 
   log "Starting monitor daemon..."
@@ -1252,16 +1278,32 @@ cmd_monitor() {
 
   init_hdmi_audio_default_async &
 
-  rm -f /tmp/usm_suspending.lock
-  local last_event_time=0
+  USM_RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/usm"
+  mkdir -p "$USM_RUN_DIR"
+  rm -f "$USM_RUN_DIR/usm_suspending.lock"
+  LAST_EVENT_TIME=0
 
-  # Read events from dbus-monitor and udevadm in parallel.
-  # stdbuf -oL ensures line-buffered output from dbus-monitor so each
-  # signal line is delivered immediately to the while-read loop.
+  FIFO_PATH="$USM_RUN_DIR/monitor_$$.fifo"
+  rm -f "$FIFO_PATH" 2>/dev/null
+  if ! mkfifo "$FIFO_PATH"; then
+    log "Error: Failed to create FIFO at $FIFO_PATH"
+    exit 1
+  fi
+
   local dbus_filter
   dbus_filter="type='signal',"
   dbus_filter+="interface='org.freedesktop.login1.Manager',"
   dbus_filter+="member='PrepareForSleep'"
+
+  if command -v stdbuf >/dev/null 2>&1; then
+    stdbuf -oL dbus-monitor --system "$dbus_filter" > "$FIFO_PATH" 2>/dev/null &
+  else
+    dbus-monitor --system "$dbus_filter" > "$FIFO_PATH" 2>/dev/null &
+  fi
+  DBUS_PID=$!
+
+  udevadm monitor --subsystem=drm > "$FIFO_PATH" 2>/dev/null &
+  UDEV_PID=$!
 
   while read -r line; do
     if echo "$line" | grep -q "boolean true"; then
@@ -1271,16 +1313,10 @@ cmd_monitor() {
     elif echo "$line" | grep -q "UDEV.*change"; then
       handle_event_udev
     fi
-  done < <(
-    trap 'pkill -P $BASHPID 2>/dev/null' EXIT
-    if command -v stdbuf >/dev/null 2>&1; then
-      stdbuf -oL dbus-monitor --system "$dbus_filter" 2>/dev/null &
-    else
-      dbus-monitor --system "$dbus_filter" 2>/dev/null &
-    fi
-    udevadm monitor --subsystem=drm 2>/dev/null &
-    wait
-  )
+  done < "$FIFO_PATH"
+
+  log "Error: Monitor loop unexpectedly closed (EOF). Exiting..."
+  exit 1
 }
 
 # ==============================================================================
@@ -1300,7 +1336,6 @@ cmd_monitor() {
 # ==============================================================================
 cmd_status() {
   printf "%s\n" "--- USM Status ---"
-  local svc_status
   systemctl --user status "$SVC_NAME" \
     -n 10 -l --no-pager 2>/dev/null \
     || echo "(Service not found or failed to load)"
@@ -1344,7 +1379,7 @@ cmd_read_conf() {
 # Globals:
 #   SVC_NAME
 # Arguments:
-#   $1 - The systemctl action to run (e.g. start, stop, restart).
+#   $1 - action: The systemctl action to run (e.g. start, stop, restart).
 # Outputs:
 #   Writes execution logs to stdout/log file.
 # Returns:
@@ -1376,33 +1411,48 @@ cmd_notify_test() {
   log "Notification sent."
 }
 
-if (( $# == 0 )); then
-  show_usage
-  exit 1
-fi
+main() {
+  if [[ -f "$CONF_FILE" ]]; then
+    # shellcheck disable=SC1090
+    source "$CONF_FILE"
+  else
+    log "Error: Configuration file not found at $CONF_FILE"
+    notify_user "Error: Configuration file not found."
+    exit 1
+  fi
 
-case "$1" in
-  read-conf)   cmd_read_conf ;;
-  monitor)     cmd_monitor ;;
-  screen-ext)  cmd_screen_ext ;;
-  screen-int)  cmd_screen_int ;;
-  screen-dual) cmd_screen_dual ;;
-  swayidle_enable) start_swayidle ;;
-  swayidle_disable) stop_swayidle ;;
-  status)      cmd_status ;;
-  start)       cmd_service "start" ;;
-  stop)        cmd_service "stop" ;;
-  restart)     cmd_service "restart" ;;
-  log_enable)  cmd_log_enable ;;
-  log_disable) cmd_log_disable ;;
-  hdmi-audio-on)    cmd_hdmi_audio_on ;;
-  hdmi-audio-off)   cmd_hdmi_audio_off ;;
-  hdmi-audio-state) cmd_hdmi_audio_state ;;
-  notify-test) cmd_notify_test ;;
-  version)     printf "USM Version: %s\n" "$USM_VERSION" ;;
-  *)
-    log "Error: Unknown command '$1'"
+  set_log_file_var
+
+  if (( $# == 0 )); then
     show_usage
     exit 1
-    ;;
-esac
+  fi
+
+  case "$1" in
+    read-conf)   cmd_read_conf ;;
+    monitor)     cmd_monitor ;;
+    screen-ext)  cmd_screen_ext ;;
+    screen-int)  cmd_screen_int ;;
+    screen-dual) cmd_screen_dual ;;
+    swayidle_enable) start_swayidle ;;
+    swayidle_disable) stop_swayidle ;;
+    status)      cmd_status ;;
+    start)       cmd_service "start" ;;
+    stop)        cmd_service "stop" ;;
+    restart)     cmd_service "restart" ;;
+    log_enable)  cmd_log_enable ;;
+    log_disable) cmd_log_disable ;;
+    hdmi-audio-on)    cmd_hdmi_audio_on ;;
+    hdmi-audio-off)   cmd_hdmi_audio_off ;;
+    hdmi-audio-state) cmd_hdmi_audio_state ;;
+    notify-test) cmd_notify_test ;;
+    version)     printf "USM Version: %s\n" "$USM_VERSION" ;;
+    *)
+      log "Error: Unknown command '$1'"
+      show_usage
+      exit 1
+      ;;
+  esac
+}
+
+main "$@"

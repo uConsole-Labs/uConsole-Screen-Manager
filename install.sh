@@ -20,16 +20,30 @@ readonly MAKO_CONF="$MAKO_DIR/config"
 readonly LABWC_DIR="$HOME/.config/labwc"
 readonly LABWC_AUTO="$LABWC_DIR/autostart"
 
-# Helper for formatted output
+# ==============================================================================
+# log
+#
+# Writes a formatted log message to stdout.
+#
+# Globals:
+#   LOG_PREFIX
+# Arguments:
+#   $1 - message: The message text to log.
+# Outputs:
+#   Writes the message to stdout.
+# Returns:
+#   0 on success.
+# ==============================================================================
 log() {
   printf "%s %s\n" "$LOG_PREFIX" "$1"
 }
 
-log "Installing USM..."
+main() {
+  log "Installing USM..."
 
-# Stop existing service before installation to prevent file lock
-log "Stopping existing service (if any)..."
-systemctl --user stop "$FILE_SVC" 2>/dev/null || true
+  # Stop existing service before installation to prevent file lock
+  log "Stopping existing service (if any)..."
+  systemctl --user stop "$FILE_SVC" 2>/dev/null || true
 
 # Check and install mako-notifier
 if ! command -v mako >/dev/null 2>&1; then
@@ -135,15 +149,18 @@ systemctl --user disable --now $FILE_SVC || true
 rm -f "\$HOME/.config/systemd/user/$FILE_SVC"
 systemctl --user daemon-reload
 
-read -r -p "Remove config/hooks in \$HOME/.config/usm? [y/N] " rm_conf
-if [[ "\$rm_conf" =~ ^[Yy]\$ ]]; then
-  rm -rf "\$HOME/.config/usm"
-else
-  rm -f "\$HOME/.config/usm/$FILE_VER"
-  printf "%s User configurations and hooks retained.\n" "\$LOG_PREFIX"
-fi
-sed -i '/alias usm=/d' "\$HOME/.bashrc"
-sed -i "/restart $FILE_SVC/d" "\$HOME/.config/labwc/autostart" || true
+  read -r -p "Remove config/hooks in \$HOME/.config/usm? [y/N] " rm_conf
+  if [[ "\$rm_conf" =~ ^[Yy]\$ ]]; then
+    rm -f "\$HOME/.config/usm/$FILE_CONF"
+    rm -f "\$HOME/.config/usm/hooks/"*.sh
+    rmdir "\$HOME/.config/usm/hooks" 2>/dev/null || true
+    rmdir "\$HOME/.config/usm" 2>/dev/null || true
+  else
+    rm -f "\$HOME/.config/usm/$FILE_VER"
+    printf "%s User configurations and hooks retained.\n" "\$LOG_PREFIX"
+  fi
+  sed -i '/alias usm=/d' "\$HOME/.bashrc"
+  sed -i "/restart $FILE_SVC/d" "\$HOME/.config/labwc/autostart" || true
 rm -f "\$HOME/.local/bin/$FILE_CLI"
 rm -f "\$HOME/.local/bin/$FILE_UNINST"
 printf "%s USM successfully removed.\n" "\$LOG_PREFIX"
@@ -171,4 +188,7 @@ if [[ "$start_resp" =~ ^[Yy]$ ]]; then
   systemctl --user restart "$FILE_SVC"
 fi
 
-log "Installation complete! Please reload bashrc or restart terminal."
+  log "Installation complete! Please reload bashrc or restart terminal."
+}
+
+main "$@"
