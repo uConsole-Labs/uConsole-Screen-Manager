@@ -596,6 +596,26 @@ stop_swayidle() {
 }
 
 # ==============================================================================
+# try_systemd_run
+#
+# Attempts to execute the given swayidle command via systemd-run.
+#
+# Globals:
+#   None
+# Arguments:
+#   $1 - swayidle_cmd: The command string to execute.
+# Outputs:
+#   None
+# Returns:
+#   0 if systemd-run exists and executes successfully, 1 otherwise.
+# ==============================================================================
+try_systemd_run() {
+  local swayidle_cmd="$1"
+  command -v systemd-run >/dev/null 2>&1 || return 1
+  systemd-run --user bash -c "$swayidle_cmd" 2>/dev/null
+}
+
+# ==============================================================================
 # start_swayidle
 #
 # Starts the swayidle process by extracting its command from the autostart
@@ -633,9 +653,8 @@ start_swayidle() {
   fi
 
   log "Executing via systemd-run: $swayidle_cmd"
-  if command -v systemd-run >/dev/null 2>&1; then
-    systemd-run --user --background bash -c "$swayidle_cmd" 2>/dev/null
-  else
+  if ! try_systemd_run "$swayidle_cmd"; then
+    log "Warning: Falling back to nohup to start swayidle"
     nohup bash -c "$swayidle_cmd" >/dev/null 2>&1 &
   fi
 }
@@ -1267,6 +1286,48 @@ reload_config() {
   fi
 }
 
+# ==============================================================================
+# setup_runtime_dir
+#
+# Determines and creates a writable runtime directory for USM.
+# Applies fallbacks if the primary XDG_RUNTIME_DIR is unavailable.
+#
+# Globals:
+#   USM_RUN_DIR (writes)
+# Arguments:
+#   None
+# Outputs:
+#   Writes logs to stdout if fallbacks are used.
+# Returns:
+#   0 on success.
+# ==============================================================================
+setup_runtime_dir() {
+  local dirs=(
+    "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/usm"
+    "/tmp/usm_$(id -u)"
+    "$HOME/.local/state/usm/run"
+  )
+
+  local d
+  for d in "${dirs[@]}"; do
+    local err_msg
+    if err_msg=$(mkdir -p "$d" 2>&1); then
+      if [[ -w "$d" ]]; then
+        USM_RUN_DIR="$d"
+        return 0
+      else
+        log "Warning: Directory $d created but is not writable."
+      fi
+    else
+      log "Warning: Failed to create $d. Error: $err_msg"
+    fi
+  done
+
+  USM_RUN_DIR="/tmp"
+  log "Error: All runtime directories failed. Using fallback: $USM_RUN_DIR"
+  return 0
+}
+
 cmd_monitor() {
   trap 'reload_config' SIGHUP
   trap 'cleanup_on_exit' EXIT INT TERM
@@ -1278,16 +1339,26 @@ cmd_monitor() {
 
   init_hdmi_audio_default_async &
 
-  USM_RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/usm"
-  mkdir -p "$USM_RUN_DIR"
+  setup_runtime_dir
   rm -f "$USM_RUN_DIR/usm_suspending.lock"
   LAST_EVENT_TIME=0
 
   FIFO_PATH="$USM_RUN_DIR/monitor_$$.fifo"
   rm -f "$FIFO_PATH" 2>/dev/null
-  if ! mkfifo "$FIFO_PATH"; then
-    log "Error: Failed to create FIFO at $FIFO_PATH"
-    exit 1
+  local fifo_err
+  if ! fifo_err=$(mkfifo "$FIFO_PATH" 2>&1); then
+    log "Error: Failed to create FIFO at $FIFO_PATH. Error: $fifo_err"
+    if [[ "$USM_RUN_DIR" != "/tmp" ]]; then
+      log "Warning: Attempting to create FIFO in /tmp as fallback."
+      FIFO_PATH="/tmp/monitor_$$.fifo"
+      rm -f "$FIFO_PATH" 2>/dev/null
+      if ! fifo_err=$(mkfifo "$FIFO_PATH" 2>&1); then
+        log "Error: Fallback FIFO failed. Error: $fifo_err"
+        exit 1
+      fi
+    else
+      exit 1
+    fi
   fi
 
   local dbus_filter
