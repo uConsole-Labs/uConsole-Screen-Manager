@@ -122,6 +122,13 @@ CMA bandwidth exhaustion. USM handles this with two strategies:
    working state. This guarantees the system never enters an unrecoverable
    dual-black state.
 
+4. **Manual Screen Control (`screen-on` / `screen-off`):**
+   USM exposes commands to explicitly turn screens off (`$SCREEN_ENABLED_NO`)
+   or on. When executing `screen-on`, USM queries the Wayland compositor
+   (`wlr-randr`) for active outputs to guarantee state consistency, and
+   delegates to the appropriate switching strategy (ext, dual, or int) based
+   on hardware presence and `USM_MODE`.
+
 ### F. Custom Execution Hooks
 
 USM supports external script execution for user-defined actions. Upon
@@ -150,19 +157,25 @@ an asynchronous audio management layer.
 
 
 ### Custom Hooks Architecture
-USM exposes a lightweight hooking mechanism. By placing shell scripts in `~/.config/usm/hooks/`, users can hook into four distinct lifecycle phases:
+USM exposes a lightweight hooking mechanism. By placing shell scripts in
+`~/.config/usm/hooks/`, users can hook into four distinct lifecycle phases:
 1.  **Daemon Start** (`usm_hook_usm_start.sh`)
 2.  **Daemon Stop/Exit** (`usm_hook_usm_stop.sh`)
 3.  **Hardware Plug** (`usm_hook_hdmi_plug.sh`)
 4.  **Hardware Unplug** (`usm_hook_hdmi_unplug.sh`)
 
-These scripts run non-blocking in the background, ensuring the main event loop (`dbus-monitor`/`udevadm`) is never obstructed by slow user code.
-*Note: The `make install` (or `install.sh`) script automatically grants `chmod +x` execution permissions to these template scripts when copying them to the user's config directory.*
+These scripts run non-blocking in the background, ensuring the main event loop
+(`dbus-monitor`/`udevadm`) is never obstructed by slow user code.
+*Note: The `make install` (or `install.sh`) script automatically grants
+`chmod +x` execution permissions to these template scripts when copying them to
+the user's config directory.*
 
 ### Swayidle Lifecycle Management
 Swayidle logic adheres to the Single Responsibility Principle (SRP):
-*   Hardware state transitions (Plug/Unplug) evaluate environment constraints and call `start_swayidle` / `stop_swayidle`.
-*   Daemon termination cleanly delegates to `cleanup_on_exit`, running hooks and resetting swayidle to the default background state.
+*   Hardware state transitions (Plug/Unplug) evaluate environment constraints
+    and call `start_swayidle` / `stop_swayidle`.
+*   Daemon termination cleanly delegates to `cleanup_on_exit`, running hooks
+    and resetting swayidle to the default background state.
 
 # 系統架構與設計文件 (Traditional Chinese)
 
@@ -273,6 +286,12 @@ Raspberry Pi CM4 的 VC4 KMS 驅動在面臨原子提交 (Atomic Commit) 時，
    fallback 至 `cmd_screen_int`，確保內螢幕可用，防止系統陷入雙重
    黑屏狀態。
 
+4. **手動螢幕控制 (`screen-on` / `screen-off`)**：
+   提供明確的指令讓使用者強制關閉 (`screen-off`) 或開啟 (`screen-on`)
+   螢幕。在執行 `screen-on` 時，USM 向 Wayland 合成器 (`wlr-randr`)
+   查詢目前偵測到的實體螢幕，並依據結果與 `USM_MODE` 分派至適當的切換
+   策略 (ext, dual, 或 int)。
+
 ### F. 自訂執行掛鉤 (Hooks)
 
 USM 允許使用者透過外部腳本執行自訂操作。在完成螢幕切換後，
@@ -296,16 +315,21 @@ Raspberry Pi OS 的 `vc4-hdmi` 驅動存在一個已知的硬體缺陷：當 Pip
 
 
 ### 自定義腳本架構 (Custom Hooks Architecture)
-USM 提供輕量級的 Hook 機制。使用者只需將 shell 腳本放置於 `~/.config/usm/hooks/` 中，即可介入以下四個生命週期階段：
+USM 提供輕量級的 Hook 機制。使用者只需將 shell 腳本放置於
+`~/.config/usm/hooks/` 中，即可介入以下四個生命週期階段：
 1.  **守護行程啟動 (Daemon Start)** (`usm_hook_usm_start.sh`)
 2.  **守護行程停止/退出 (Daemon Stop/Exit)** (`usm_hook_usm_stop.sh`)
 3.  **硬體插入 (Hardware Plug)** (`usm_hook_hdmi_plug.sh`)
 4.  **硬體拔除 (Hardware Unplug)** (`usm_hook_hdmi_unplug.sh`)
 
-所有 Hook 腳本皆在背景以非阻塞（Non-blocking）模式執行，確保 `dbus-monitor`/`udevadm` 的主事件迴圈不會被耗時的使用者程式碼所阻塞。
-*備註：在執行安裝腳本 (`install.sh`) 時，系統會自動賦予複製到使用者設定檔目錄下的樣板腳本 `chmod +x` 的執行權限。*
+所有 Hook 腳本皆在背景以非阻塞（Non-blocking）模式執行，確保
+`dbus-monitor`/`udevadm` 的主事件迴圈不會被耗時的使用者程式碼所阻塞。
+*備註：在執行安裝腳本 (`install.sh`) 時，系統會自動賦予複製到使用者設定檔目
+錄下的樣板腳本 `chmod +x` 的執行權限。*
 
 ### Swayidle 生命週期管理
 Swayidle 邏輯嚴格遵循單一責任原則（SRP）：
-*   **硬體狀態轉換**（插入/拔除）負責評估環境限制，並呼叫 `start_swayidle` 或 `stop_swayidle`。
-*   **服務終止**則將清理工作乾淨俐落地委派給 `cleanup_on_exit`，在執行停止 Hooks 後，將 Swayidle 還原至預設的背景狀態。
+*   **硬體狀態轉換**（插入/拔除）負責評估環境限制，並呼叫 `start_swayidle`
+    或 `stop_swayidle`。
+*   **服務終止**則將清理工作乾淨俐落地委派給 `cleanup_on_exit`，在執行停止
+    Hooks 後，將 Swayidle 還原至預設的背景狀態。

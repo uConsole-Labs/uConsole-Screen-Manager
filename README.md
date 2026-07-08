@@ -41,6 +41,8 @@ Type `usm` in your terminal to see all available commands:
 * `usm screen-ext`  : Switch output to external display only.
 * `usm screen-int`  : Switch output to internal display only.
 * `usm screen-dual` : Switch output to both displays.
+* `usm screen-on`   : Turn on screens based on detected hardware and mode.
+* `usm screen-off`  : Turn off all screens.
 * `usm start/stop`  : Control the USM background service.
 * `usm restart`     : Restart the USM background service.
 * `usm notify-test` : Test desktop notifications (requires mako).
@@ -66,11 +68,13 @@ The config file is located at `~/.config/usm/usm.conf`:
 
 ## 🪝 Custom Hooks
 USM supports executing custom user scripts at specific lifecycle events.
-When `USM_HOOKS_ENABLE="true"` is set in `~/.config/usm/usm.conf`, the following scripts in `~/.config/usm/hooks/` will be executed if they exist:
+When `USM_HOOKS_ENABLE="true"` is set in `~/.config/usm/usm.conf`, the
+following scripts in `~/.config/usm/hooks/` will be executed if they exist:
 *   `usm_hook_hdmi_plug.sh`: Triggered when an HDMI connection is detected.
 *   `usm_hook_hdmi_unplug.sh`: Triggered when HDMI is disconnected.
 *   `usm_hook_usm_start.sh`: Triggered when the USM background service starts.
-*   `usm_hook_usm_stop.sh`: Triggered when the USM background service stops or terminates.
+*   `usm_hook_usm_stop.sh`: Triggered when the USM background service stops or
+    terminates.
 
 ## 🐛 Debugging & Troubleshooting
 
@@ -176,6 +180,8 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 * `usm screen-ext`  : 強制切換至「僅外接螢幕」輸出。
 * `usm screen-int`  : 強制切換至「僅內建螢幕」輸出。
 * `usm screen-dual` : 強制切換至「雙螢幕」同時輸出。
+* `usm screen-on`   : 根據偵測到的硬體與設定模式開啟螢幕。
+* `usm screen-off`  : 關閉所有螢幕。
 * `usm start/stop`  : 啟動或停止 USM 背景服務。
 * `usm restart`     : 重新啟動 USM 背景服務。
 * `usm notify-test` : 測試桌面通知功能 (需安裝 mako)。
@@ -201,7 +207,8 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 
 ## 🪝 自定義腳本 (Custom Hooks)
 USM 支援在特定生命週期事件觸發時執行使用者自定義腳本。
-當 `~/.config/usm/usm.conf` 中啟用 `USM_HOOKS_ENABLE="true"` 時，若 `~/.config/usm/hooks/` 目錄下存在以下腳本，USM 將在背景自動執行它們：
+當 `~/.config/usm/usm.conf` 中啟用 `USM_HOOKS_ENABLE="true"` 時，若
+`~/.config/usm/hooks/` 目錄下存在以下腳本，USM 將在背景自動執行它們：
 *   `usm_hook_hdmi_plug.sh`：偵測到 HDMI 連線時觸發。
 *   `usm_hook_hdmi_unplug.sh`：HDMI 斷線時觸發。
 *   `usm_hook_usm_start.sh`：USM 背景服務啟動時觸發。

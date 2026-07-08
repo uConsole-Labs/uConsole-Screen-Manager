@@ -19,9 +19,17 @@ readonly HOOK_USM_START="usm_hook_usm_start.sh"
 readonly HOOK_USM_STOP="usm_hook_usm_stop.sh"
 
 # --- Modes (Enum) ---
+readonly BRIGHTNESS_OFF="0"
+readonly BRIGHTNESS_MAX="9"
 readonly MODE_INT="int"
 readonly MODE_EXT="ext"
 readonly MODE_DUAL="dual"
+readonly MODE_NONE="none"
+readonly CONF_MODE_SINGLE="single"
+# shellcheck disable=SC2034
+readonly CONF_MODE_DUAL="dual"
+readonly STATE_YES="yes"
+readonly STATE_NO="no"
 readonly DEBOUNCE_SEC=5
 
 # --- Audio Constants ---
@@ -39,6 +47,7 @@ readonly SCREEN_OUT_INT="DSI-2"
 readonly SCREEN_OUT_EXT="HDMI-A-1"
 readonly SCREEN_ENABLED_YES="SCREEN_ENABLED_YES"
 readonly SCREEN_ENABLED_NO="SCREEN_ENABLED_NO"
+readonly SCREEN_ENABLED_SKIP="SCREEN_ENABLED_SKIP"
 readonly SCREEN_MODE_720_1280="720x1280"
 readonly SCREEN_MODE_1024_768="1024x768"
 readonly SCREEN_MODE_2560_1440="2560x1440"
@@ -180,7 +189,7 @@ is_ext_connected() {
 #   None
 # Arguments:
 #   $1 - output: The output name (e.g. DSI-2, HDMI-A-1).
-#   $2 - expected: "yes" to expect enabled, "no" to expect disabled.
+#   $2 - expected: "$STATE_YES" to expect enabled, "$STATE_NO" to expect disabled.
 # Outputs:
 #   None
 # Returns:
@@ -190,9 +199,9 @@ check_display_state() {
   local output="$1"
   local expected="$2"
   if wlr-randr | grep -A 5 "^$output" | grep -q "Enabled: yes"; then
-    [[ "$expected" == "yes" ]]
+    [[ "$expected" == "$STATE_YES" ]]
   else
-    [[ "$expected" == "no" ]]
+    [[ "$expected" == "$STATE_NO" ]]
   fi
 }
 
@@ -219,16 +228,16 @@ is_state_matching() {
   local target="$1"
   case "$target" in
     "$MODE_EXT")
-      check_display_state "$SCREEN_OUT_INT" "no" \
-        && check_display_state "$SCREEN_OUT_EXT" "yes"
+      check_display_state "$SCREEN_OUT_INT" "$STATE_NO" \
+        && check_display_state "$SCREEN_OUT_EXT" "$STATE_YES"
       ;;
     "$MODE_INT")
-      check_display_state "$SCREEN_OUT_INT" "yes" \
-        && check_display_state "$SCREEN_OUT_EXT" "no"
+      check_display_state "$SCREEN_OUT_INT" "$STATE_YES" \
+        && check_display_state "$SCREEN_OUT_EXT" "$STATE_NO"
       ;;
     "$MODE_DUAL")
-      check_display_state "$SCREEN_OUT_INT" "yes" \
-        && check_display_state "$SCREEN_OUT_EXT" "yes"
+      check_display_state "$SCREEN_OUT_INT" "$STATE_YES" \
+        && check_display_state "$SCREEN_OUT_EXT" "$STATE_YES"
       ;;
     *)
       return 1
@@ -380,6 +389,8 @@ show_usage() {
   printf "  screen-int   Switch output to internal display only\n"
   printf "  screen-ext   Switch output to external display only\n"
   printf "  screen-dual  Switch output to both displays\n"
+  printf "  screen-on    Turn on screens based on detected hardware and mode\n"
+  printf "  screen-off   Turn off all screens\n"
   printf "  swayidle_enable  Enables swayidle by reading autostart config.\n"
   printf "  swayidle_disable Disables swayidle by terminating its process.\n"
   printf "  status       Print current service and display status\n"
@@ -498,7 +509,9 @@ exec_wlr_randr() {
   log "Detected outputs: ${active_outputs[*]}"
 
   # Step b: Build internal screen command.
-  if [[ $has_int -eq 0 ]]; then
+  if [[ "$int_enabled" == "$SCREEN_ENABLED_SKIP" ]]; then
+    log "Internal screen ($SCREEN_OUT_INT) config explicitly skipped."
+  elif [[ $has_int -eq 0 ]]; then
     local int_state="--off"
     if [[ "$int_enabled" == "$SCREEN_ENABLED_YES" ]]; then
       int_state="--on"
@@ -517,7 +530,9 @@ exec_wlr_randr() {
   fi
 
   # Step c: Build external screen command.
-  if [[ $has_ext -eq 0 ]]; then
+  if [[ "$ext_enabled" == "$SCREEN_ENABLED_SKIP" ]]; then
+    log "External screen ($SCREEN_OUT_EXT) config explicitly skipped."
+  elif [[ $has_ext -eq 0 ]]; then
     local ext_state="--off"
     if [[ "$ext_enabled" == "$SCREEN_ENABLED_YES" ]]; then
       ext_state="--on"
@@ -710,7 +725,7 @@ update_display_by_hdmi_state() {
   # 2. Find the needed screen mode
   local target_screen_mode="$MODE_INT"
   if [[ "$current_hdmi_state" == "$STATE_HDMI_CONN" ]]; then
-    if [[ "${USM_MODE:-single}" == "single" ]]; then
+    if [[ "${USM_MODE:-$CONF_MODE_SINGLE}" == "$CONF_MODE_SINGLE" ]]; then
       target_screen_mode="$MODE_EXT"
     else
       target_screen_mode="$MODE_DUAL"
@@ -732,7 +747,7 @@ update_display_by_hdmi_state() {
   local hook_name=""
 
   if [[ "$current_hdmi_state" == "$STATE_HDMI_CONN" ]]; then
-    if [[ "${USM_MODE:-single}" == "single" ]]; then
+    if [[ "${USM_MODE:-$CONF_MODE_SINGLE}" == "$CONF_MODE_SINGLE" ]]; then
       target_cmd="cmd_screen_ext"
     else
       target_cmd="cmd_screen_dual"
@@ -781,6 +796,9 @@ update_display_by_hdmi_state() {
 cmd_screen_int() {
   log "Starting cmd_screen_int."
   local ret=0
+
+  usm_int_backlight_force_on
+
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
     "$SCREEN_ENABLED_NO" \
@@ -796,22 +814,32 @@ cmd_screen_int() {
   sleep "$SLEEP_SEC"
   log "First try failed. Starting fallback sequence."
 
-  ret=0
-  exec_wlr_randr \
-    "$SCREEN_ENABLED_NO" \
-    "$SCREEN_ENABLED_NO" \
-    "$SCREEN_MODE_1024_768" || ret=$?
-  log "Fallback: Disabled both screens (ret: $ret)."
+  if usm_is_screen_on "$SCREEN_OUT_EXT"; then
+    log "Fallback: Turning off external screen..."
+    exec_wlr_randr \
+      "$SCREEN_ENABLED_SKIP" \
+      "$SCREEN_ENABLED_NO" \
+      "$SCREEN_MODE_1024_768" || true
+  fi
 
-  sleep "$SLEEP_SEC"
-  log "Fallback: Waiting completed."
+  if usm_is_screen_on "$SCREEN_OUT_INT"; then
+    log "Fallback: Turning off internal screen temporarily..."
+    exec_wlr_randr \
+      "$SCREEN_ENABLED_NO" \
+      "$SCREEN_ENABLED_SKIP" \
+      "$SCREEN_MODE_1024_768" || true
+  fi
+
+  log "Fallback: Enabling internal screen..."
+  usm_int_backlight_force_on
 
   ret=0
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
-    "$SCREEN_ENABLED_NO" \
-    "$SCREEN_MODE_2560_1440" || ret=$?
-  log "Second exec_wlr_randr returned: $ret"
+    "$SCREEN_ENABLED_SKIP" \
+    "$SCREEN_MODE_1024_768" || ret=$?
+
+  log "Fallback internal enable returned: $ret"
   return "$ret"
 }
 
@@ -843,6 +871,7 @@ cmd_screen_ext() {
   log "First exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
+    usm_int_backlight_force_off
     notify_user "External Screen Enabled"
     log "Successfully set to external screen."
     return 0
@@ -879,6 +908,9 @@ cmd_screen_ext() {
 cmd_screen_dual() {
   log "Starting cmd_screen_dual."
   local ret=0
+
+  usm_int_backlight_force_on
+
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
     "$SCREEN_ENABLED_YES" \
@@ -909,6 +941,331 @@ cmd_screen_dual() {
   cmd_screen_int || ret=$?
   log "Fallback cmd_screen_int returned: $ret"
   return "$ret"
+}
+
+# ==============================================================================
+# usm_is_screen_detected
+#
+# Checks if a specific screen output is currently detected by the Wayland
+# compositor using wlr-randr.
+#
+# Globals:
+#   None
+# Arguments:
+#   $1 - target_screen: The name of the screen output (e.g. HDMI-A-1).
+# Outputs:
+#   None
+# Returns:
+#   0 if the screen is detected, 1 otherwise.
+# ==============================================================================
+usm_is_screen_detected() {
+  local target_screen="$1"
+  local ret=0
+
+  wlr-randr 2>/dev/null \
+    | awk '/^[a-zA-Z0-9_-]+/ {print $1}' \
+    | grep -qx "$target_screen" || ret=$?
+
+  return "$ret"
+}
+
+# ==============================================================================
+# usm_is_screen_on
+#
+# Checks whether a specified Wayland output is currently enabled via wlr-randr.
+#
+# Globals:
+#   None
+# Arguments:
+#   $1 - target_screen: The name of the screen output (e.g. HDMI-A-1).
+# Outputs:
+#   None
+# Returns:
+#   0 if the screen is enabled, 1 otherwise.
+# ==============================================================================
+usm_is_screen_on() {
+  local target_screen="$1"
+  local is_target_screen_enabled
+  is_target_screen_enabled=$( (wlr-randr 2>/dev/null || true) | awk -v sc="$target_screen" '
+    $1 == sc { found = 1 }
+    found && $1 == "Enabled:" { print $2; exit }
+  ' || true)
+  if [[ "$is_target_screen_enabled" == "$STATE_YES" ]]; then
+    return 0
+  else
+    return 1
+  fi
+}
+
+# ==============================================================================
+# usm_get_current_usm_mode
+#
+# Determines the current display mode by checking hardware connectivity via
+# wlr-randr and combining it with the configured USM_MODE target.
+#
+# Globals:
+#   SCREEN_OUT_EXT
+#   SCREEN_OUT_INT
+#   USM_MODE
+#   MODE_EXT
+#   MODE_DUAL
+#   MODE_INT
+# Arguments:
+#   None
+# Outputs:
+#   Writes the resulting mode string to stdout ("ext", "dual", "int", "none").
+# Returns:
+#   0 on success.
+# ==============================================================================
+usm_get_current_usm_mode() {
+  local has_ext=1
+  local has_int=1
+
+  while read -r line; do
+    if [[ "$line" =~ ^([a-zA-Z0-9_-]+) ]]; then
+      local out="${BASH_REMATCH[1]}"
+      if [[ "$out" == "$SCREEN_OUT_EXT" ]]; then
+        has_ext=0
+      elif [[ "$out" == "$SCREEN_OUT_INT" ]]; then
+        has_int=0
+      fi
+    fi
+  done < <(wlr-randr 2>/dev/null || true)
+
+  if [[ $has_ext -eq 0 ]]; then
+    if [[ "${USM_MODE:-$CONF_MODE_SINGLE}" == "$CONF_MODE_SINGLE" ]]; then
+      echo "$MODE_EXT"
+    else
+      echo "$MODE_DUAL"
+    fi
+  elif [[ $has_int -eq 0 ]]; then
+    echo "$MODE_INT"
+  else
+    echo "$MODE_NONE"
+  fi
+}
+
+# ==============================================================================
+# usm_int_backlight_force_on
+#
+# Unconditionally forces the internal screen's hardware power and brightness
+# to be turned on.
+#
+# Globals:
+#   BRIGHTNESS_MAX
+# Arguments:
+#   None
+# Outputs:
+#   Writes logs.
+# Returns:
+#   None
+# ==============================================================================
+usm_int_backlight_force_on() {
+  log "Forcing internal screen hardware power and brightness ON."
+  usm_set_int_screen_power "on"
+  usm_set_int_screen_brightness "$BRIGHTNESS_MAX"
+}
+
+# ==============================================================================
+# usm_int_backlight_force_off
+#
+# Unconditionally forces the internal screen's hardware power and brightness
+# to be turned off.
+#
+# Globals:
+#   BRIGHTNESS_OFF
+# Arguments:
+#   None
+# Outputs:
+#   Writes logs.
+# Returns:
+#   None
+# ==============================================================================
+usm_int_backlight_force_off() {
+  log "Forcing internal screen hardware power and brightness OFF."
+  usm_set_int_screen_power "off"
+  usm_set_int_screen_brightness "$BRIGHTNESS_OFF"
+}
+
+# ==============================================================================
+# usm_set_int_screen_brightness
+#
+# Forces the internal screen brightness to a specific numeric value.
+#
+# Globals:
+#   None
+# Arguments:
+#   $1 - target_brightness: Numeric brightness value (e.g. BRIGHTNESS_MAX).
+# Outputs:
+#   None
+# Returns:
+#   0 on success, 1 on failure.
+# ==============================================================================
+usm_set_int_screen_brightness() {
+  local target_brightness="$1"
+  local bl_path
+  bl_path=$(find /sys/class/backlight -maxdepth 1 -mindepth 1 2>/dev/null | head -n 1 || true)
+  if [[ -n "$bl_path" ]]; then
+    log "Hardware write: $target_brightness -> $bl_path/brightness"
+    sudo sh -c "echo $target_brightness > $bl_path/brightness" 2>/dev/null || true
+  fi
+}
+
+
+# ==============================================================================
+# usm_set_int_screen_power
+#
+# Forces the internal screen power to ON or OFF by writing to both backlight
+# power and framebuffer blank sysfs interfaces.
+#
+# Globals:
+#   None
+# Arguments:
+#   $1 - target state: "on" or "off".
+# Outputs:
+#   None
+# Returns:
+#   0 on success, 1 on failure.
+# ==============================================================================
+usm_set_int_screen_power() {
+  local state="${1:-on}"
+  local bl_path
+  bl_path=$(find /sys/class/backlight -maxdepth 1 -mindepth 1 2>/dev/null | head -n 1 || true)
+  local fb_path
+  fb_path=$(find /sys/class/graphics -name "fb0" 2>/dev/null | head -n 1 || true)
+
+  local fb_val="0"
+  local bl_val="0"
+  if [[ "$state" == "off" ]]; then
+    fb_val="1"
+    bl_val="4"
+  fi
+
+  if [[ -n "$fb_path" ]]; then
+    log "Hardware write: $fb_val -> $fb_path/blank"
+    sudo sh -c "echo $fb_val > $fb_path/blank" 2>/dev/null || true
+  fi
+
+  if [[ -n "$bl_path" ]]; then
+    log "Hardware write: $bl_val -> $bl_path/bl_power"
+    sudo sh -c "echo $bl_val > $bl_path/bl_power" 2>/dev/null || true
+  fi
+}
+
+# ==============================================================================
+# cmd_screen_off
+#
+# Disables the internal screen, but only if the external screen is disconnected
+# or disabled. Aborts if the external screen is active.
+#
+# Globals:
+#   SCREEN_ENABLED_NO
+#   SCREEN_ENABLED_SKIP
+#   SCREEN_MODE_1024_768
+#   SCREEN_OUT_EXT
+#   SCREEN_OUT_INT
+# Arguments:
+#   None
+# Outputs:
+#   Writes execution logs to stdout/log file.
+# Returns:
+#   0 on success, 1 on failure.
+# ==============================================================================
+cmd_screen_off() {
+  log "Starting cmd_screen_off."
+
+  # Check if external screen is enabled; if so, disallow screen-off
+  if usm_is_screen_on "$SCREEN_OUT_EXT"; then
+    log "External screen is active. screen-off is not allowed."
+    notify_user "Screen-off disabled in Dual/Ext mode."
+    return 1
+  fi
+
+  # Check internal screen state
+  local int_on=1
+  usm_is_screen_on "$SCREEN_OUT_INT" && int_on=0
+
+  if [[ $int_on -eq 1 ]]; then
+    log "Internal screen is already off. Expected state matched. Skip."
+    return 0
+  fi
+
+  # Turn off internal screen and explicitly skip external screen
+  local ret=0
+  exec_wlr_randr \
+    "$SCREEN_ENABLED_NO" \
+    "$SCREEN_ENABLED_SKIP" \
+    "$SCREEN_MODE_1024_768" || ret=$?
+
+  if [[ $ret -eq 0 ]]; then
+    # Completely cut off internal screen power and backlight
+    usm_int_backlight_force_off
+    notify_user "Screen Turned Off"
+    log "Successfully turned off internal screen."
+  else
+    log "Failed to turn off screen. (ret: $ret)"
+  fi
+  return "$ret"
+}
+
+# ==============================================================================
+# cmd_screen_on
+#
+# Enables screens based on detected hardware via wlr-randr and the configured
+# USM_MODE. Falls back to internal screen if external is not found.
+#
+# Globals:
+#   SCREEN_OUT_EXT
+#   SCREEN_OUT_INT
+#   USM_MODE
+# Arguments:
+#   None
+# Outputs:
+#   Writes execution logs to stdout/log file.
+# Returns:
+#   0 on success, 1 on failure.
+# ==============================================================================
+cmd_screen_on() {
+  log "Starting cmd_screen_on."
+
+  local cur_mode
+  cur_mode=$(usm_get_current_usm_mode)
+
+  local int_on=1
+  usm_is_screen_on "$SCREEN_OUT_INT" && int_on=0
+  local ext_on=1
+  usm_is_screen_on "$SCREEN_OUT_EXT" && ext_on=0
+
+  if usm_is_screen_detected "$SCREEN_OUT_EXT"; then
+    if [[ "${USM_MODE:-$CONF_MODE_SINGLE}" == "$CONF_MODE_SINGLE" ]]; then
+      if [[ "$cur_mode" == "$MODE_EXT" && $ext_on -eq 0 && $int_on -eq 1 ]]; then
+        log "Screen state already matches expected (ext only). Skip."
+        return 0
+      fi
+      log "External screen detected. Applying single mode (ext)."
+      cmd_screen_ext
+      return "$?"
+    else
+      if [[ "$cur_mode" == "$MODE_DUAL" && $ext_on -eq 0 && $int_on -eq 0 ]]; then
+        log "Screen state already matches expected (dual). Skip."
+        return 0
+      fi
+      log "External screen detected. Applying dual mode."
+      cmd_screen_dual
+      return "$?"
+    fi
+  elif usm_is_screen_detected "$SCREEN_OUT_INT"; then
+    if [[ "$cur_mode" == "$MODE_INT" && $int_on -eq 0 && $ext_on -eq 1 ]]; then
+      log "Screen state already matches expected (int only). Skip."
+      return 0
+    fi
+    log "Only internal screen detected. Applying internal mode."
+    cmd_screen_int
+    return "$?"
+  else
+    log "Error: No screens detected by wlr-randr."
+    return 1
+  fi
 }
 
 # ==============================================================================
@@ -1249,7 +1606,7 @@ cleanup_on_exit() {
   log "Monitor daemon terminating. Running cleanup..."
   run_hook "$HOOK_USM_STOP"
   rm -f "$USM_RUN_DIR/usm_suspending.lock"
-  
+
   [[ -n "$DBUS_PID" ]] && kill "$DBUS_PID" 2>/dev/null
   [[ -n "$UDEV_PID" ]] && kill "$UDEV_PID" 2>/dev/null
   rm -f "$FIFO_PATH" 2>/dev/null
@@ -1505,6 +1862,8 @@ main() {
     screen-ext)  cmd_screen_ext ;;
     screen-int)  cmd_screen_int ;;
     screen-dual) cmd_screen_dual ;;
+    screen-on)   cmd_screen_on ;;
+    screen-off)  cmd_screen_off ;;
     swayidle_enable) start_swayidle ;;
     swayidle_disable) stop_swayidle ;;
     status)      cmd_status ;;
