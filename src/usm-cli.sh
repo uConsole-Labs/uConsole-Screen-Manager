@@ -21,6 +21,8 @@ readonly HOOK_USM_STOP="usm_hook_usm_stop.sh"
 # --- Modes (Enum) ---
 readonly BRIGHTNESS_OFF="0"
 readonly BRIGHTNESS_MAX="9"
+readonly VALID_SYSTEM_STATES=("running" "degraded")
+readonly SYSTEMD_RUN_TIMEOUT_SEC="2"
 readonly MODE_INT="int"
 readonly MODE_EXT="ext"
 readonly MODE_DUAL="dual"
@@ -456,6 +458,117 @@ wait_for_compositor() {
 }
 
 # ==============================================================================
+# _test_wayland_socket
+#
+# Tests if a given Wayland socket is active by running wlr-randr against it.
+#
+# Globals:
+#   None
+# Arguments:
+#   $1 - socket_name (e.g., wayland-0)
+# Outputs:
+#   Writes a probing log to standard output.
+# Returns:
+#   0 if the socket is alive, 1 otherwise.
+# ==============================================================================
+_test_wayland_socket() {
+  local socket="$1"
+  log "Probing socket: $socket..."
+  WAYLAND_DISPLAY="$socket" wlr-randr >/dev/null 2>&1
+}
+
+# ==============================================================================
+# _apply_wayland_socket
+#
+# Updates the system environment and notifies the user of the socket change.
+#
+# Globals:
+#   WAYLAND_DISPLAY (Write)
+# Arguments:
+#   $1 - socket_name (e.g., wayland-0)
+# Outputs:
+#   Writes an application log to standard output.
+#   Sends a desktop notification.
+# Returns:
+#   0 on normal completion.
+# ==============================================================================
+_apply_wayland_socket() {
+  local socket="$1"
+  log "Applying active socket: $socket..."
+  export WAYLAND_DISPLAY="$socket"
+  systemctl --user import-environment WAYLAND_DISPLAY 2>/dev/null || true
+  notify-send "USM" "WAYLAND_DISPLAY auto-updated to $socket" \
+    2>/dev/null || true
+}
+
+# ==============================================================================
+# auto_update_wayland_display
+#
+# Automatically detects and updates WAYLAND_DISPLAY if the environment is out of
+# sync. This function checks $XDG_RUNTIME_DIR for Wayland socket lock files.
+#
+# Principle:
+# - Single lock: Fast path, blindly trusts and applies the socket.
+# - Multiple locks: Probes current cache first; if dead, actively probes others
+#   descendingly to prevent race conditions and connect to the living socket.
+#
+# Globals:
+#   XDG_RUNTIME_DIR (Read)
+#   WAYLAND_DISPLAY (Read/Write)
+# Arguments:
+#   None
+# Outputs:
+#   Writes status or warning logs to standard output.
+# Returns:
+#   0 on normal completion.
+# ==============================================================================
+auto_update_wayland_display() {
+  local runtime_dir="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+  local lock_files=("$runtime_dir"/wayland-*.lock)
+  local count="${#lock_files[@]}"
+
+  # Guard 1: Zero locks
+  if [[ "$count" -eq 0 || ! -e "${lock_files[0]}" ]]; then
+    return 0
+  fi
+
+  # Guard 2: Single lock optimization
+  if [[ "$count" -eq 1 ]]; then
+    local socket_name
+    socket_name=$(basename "${lock_files[0]%.lock}")
+    if [[ "$WAYLAND_DISPLAY" != "$socket_name" ]]; then
+      log "Single lock found. Trusting $socket_name."
+      _apply_wayland_socket "$socket_name"
+    fi
+    return 0
+  fi
+
+  # Guard 3: Fast path cache validation
+  log "Validating current cache: ${WAYLAND_DISPLAY:-<unset>}"
+  if [[ -n "$WAYLAND_DISPLAY" ]] && \
+     _test_wayland_socket "$WAYLAND_DISPLAY"; then
+    log "Cache valid."
+    return 0
+  fi
+
+  # Main logic: Active probing for multiple locks
+  # Reverse sort the array to prioritize newer sockets (e.g., wayland-1)
+  mapfile -t lock_files < <(printf "%s\n" "${lock_files[@]}" | sort -r)
+
+  for lock_file in "${lock_files[@]}"; do
+    local socket_name
+    socket_name=$(basename "${lock_file%.lock}")
+    if _test_wayland_socket "$socket_name"; then
+      _apply_wayland_socket "$socket_name"
+      return 0
+    fi
+  done
+
+  # Fallback: All probed sockets are dead
+  log "Error: All sockets dead."
+}
+
+# ==============================================================================
 # exec_wlr_randr
 #
 # Execute wlr-randr with per-screen parameters.
@@ -483,13 +596,26 @@ exec_wlr_randr() {
   local ext_enabled="$2"
   local ext_mode="$3"
 
+  auto_update_wayland_display
+
   # Step a: Init empty command array.
   local full_cmd=(wlr-randr)
 
   # Query all connected outputs once.
+  local wlr_output
+  local rc_wlr=0
+  wlr_output=$(wlr-randr 2>&1) || rc_wlr=$?
+
+  if [[ $rc_wlr -ne 0 ]]; then
+    local err_msg="Error: wlr-randr failed to connect to display "
+    err_msg+="(exit code: $rc_wlr, output: $wlr_output)"
+    log "$err_msg"
+    return 1
+  fi
+
   local active_outputs=()
   mapfile -t active_outputs < <(
-    wlr-randr \
+    echo "$wlr_output" \
       | grep -E "^[a-zA-Z0-9_-]+" \
       | awk '{print $1}'
   )
@@ -614,6 +740,8 @@ stop_swayidle() {
 # try_systemd_run
 #
 # Attempts to execute the given swayidle command via systemd-run.
+# Uses timeout to prevent the command from hanging indefinitely during
+# system shutdown when D-Bus might be unresponsive.
 #
 # Globals:
 #   None
@@ -627,7 +755,8 @@ stop_swayidle() {
 try_systemd_run() {
   local swayidle_cmd="$1"
   command -v systemd-run >/dev/null 2>&1 || return 1
-  systemd-run --user bash -c "$swayidle_cmd" 2>/dev/null
+  timeout "$SYSTEMD_RUN_TIMEOUT_SEC" systemd-run \
+    --user bash -c "$swayidle_cmd" 2>/dev/null
 }
 
 # ==============================================================================
@@ -792,12 +921,15 @@ update_display_by_hdmi_state() {
 #   Writes execution logs to stdout/log file.
 # Returns:
 #   0 on success, 1 on failure.
+#
+# Flow:
+#   [wlr-randr: target mode] --> [usm_int_backlight_force_on]
+#
+# Hardware backlight must be applied after DRM connector is active.
 # ==============================================================================
 cmd_screen_int() {
   log "Starting cmd_screen_int."
   local ret=0
-
-  usm_int_backlight_force_on
 
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
@@ -806,6 +938,7 @@ cmd_screen_int() {
   log "First exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
+    usm_int_backlight_force_on
     notify_user "Internal Screen Enabled"
     log "Successfully set to internal screen."
     return 0
@@ -831,14 +964,15 @@ cmd_screen_int() {
   fi
 
   log "Fallback: Enabling internal screen..."
-  usm_int_backlight_force_on
-
   ret=0
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
     "$SCREEN_ENABLED_SKIP" \
     "$SCREEN_MODE_1024_768" || ret=$?
 
+  if [[ $ret -eq 0 ]]; then
+    usm_int_backlight_force_on
+  fi
   log "Fallback internal enable returned: $ret"
   return "$ret"
 }
@@ -904,12 +1038,15 @@ cmd_screen_ext() {
 #   Writes execution logs to stdout/log file.
 # Returns:
 #   0 on success, 1 on failure.
+#
+# Flow:
+#   [wlr-randr: target mode] --> [usm_int_backlight_force_on]
+#
+# Hardware backlight must be applied after DRM connector is active.
 # ==============================================================================
 cmd_screen_dual() {
   log "Starting cmd_screen_dual."
   local ret=0
-
-  usm_int_backlight_force_on
 
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
@@ -928,6 +1065,7 @@ cmd_screen_dual() {
   log "Second exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
+    usm_int_backlight_force_on
     notify_user "Dual Screen Enabled"
     log "Successfully set to dual screen."
     return 0
@@ -1603,6 +1741,10 @@ init_hdmi_audio_default_async() {
 #   0 on success.
 # ==============================================================================
 cleanup_on_exit() {
+  # Prevent duplicate execution during exit traps
+  [[ -n "$_CLEANUP_DONE" ]] && return
+  _CLEANUP_DONE=1
+
   log "Monitor daemon terminating. Running cleanup..."
   run_hook "$HOOK_USM_STOP"
   rm -f "$USM_RUN_DIR/usm_suspending.lock"
@@ -1612,8 +1754,23 @@ cleanup_on_exit() {
   rm -f "$FIFO_PATH" 2>/dev/null
 
   if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" == "true" ]]; then
-    log "Service exiting: restoring swayidle"
-    start_swayidle
+    local sys_state
+    sys_state=$(systemctl is-system-running 2>/dev/null)
+    local is_valid_state=false
+
+    for state in "${VALID_SYSTEM_STATES[@]}"; do
+      if [[ "$sys_state" == "$state" ]]; then
+        is_valid_state=true
+        break
+      fi
+    done
+
+    if [[ "$is_valid_state" == "true" ]]; then
+      log "Service exiting: restoring swayidle"
+      start_swayidle
+    else
+      log "System state '$sys_state'. Skipping swayidle restore."
+    fi
   fi
 }
 
