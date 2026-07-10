@@ -164,8 +164,9 @@ USM exposes a lightweight hooking mechanism. By placing shell scripts in
 3.  **Hardware Plug** (`usm_hook_hdmi_plug.sh`)
 4.  **Hardware Unplug** (`usm_hook_hdmi_unplug.sh`)
 
-These scripts run non-blocking in the background, ensuring the main event loop
-(`dbus-monitor`/`udevadm`) is never obstructed by slow user code.
+These scripts run synchronously and block the main event loop during execution.
+Users should ensure hook scripts return quickly to avoid obstructing the main
+(`dbus-monitor`/`udevadm`) event loop with slow user code.
 *Note: The `make install` (or `install.sh`) script automatically grants
 `chmod +x` execution permissions to these template scripts when copying them to
 the user's config directory.*
