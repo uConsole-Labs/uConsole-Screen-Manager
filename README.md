@@ -64,6 +64,10 @@ The config file is located at `~/.config/usm/usm.conf`:
 * `USM_EXT_POS`: X,Y coordinates for dual mode (e.g., `"1920,0"`).
 * `USM_HOOKS_ENABLE`: Set `"true"` to run custom plug/unplug shell scripts.
 * `USM_HDMI_AUDIO_DEFAULT_STATE`: Set to `"off"` or `"on"`.
+* `USM_ENABLE_HW_POWER_CONTROL`: Set `"true"` to enable explicit DRM sysfs
+  power control (default: `"true"`).
+* `USM_HDMI_DRM_FORCE_OFF`: Set `"true"` to force DRM 'off' for HDMI, which
+  disables Hot Plug Detect (default: `"false"`).
 
 
 ## 🪝 Custom Hooks
@@ -203,6 +207,10 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 * `USM_EXT_POS`：雙螢幕模式下的外接螢幕 X,Y 座標 (如 `"1920,0"`)。
 * `USM_HOOKS_ENABLE`：設為 `"true"` 可在切換時觸發自訂 Shell 腳本。
 * `USM_HDMI_AUDIO_DEFAULT_STATE`：啟動時 HDMI 音效的預設狀態 (`"off"` 或 `"on"`)。
+* `USM_ENABLE_HW_POWER_CONTROL`：設為 `"true"` 將啟用底層 DRM 實體斷電與
+  喚醒機制 (預設 `"true"`)。
+* `USM_HDMI_DRM_FORCE_OFF`：設為 `"true"` 將強制關閉 HDMI DRM 狀態，這會
+  導致喪失熱插拔偵測能力 (預設 `"false"`)。
 
 
 ## 🪝 自定義腳本 (Custom Hooks)

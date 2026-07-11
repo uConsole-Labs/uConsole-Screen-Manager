@@ -242,8 +242,8 @@ usm_validate_config() {
       USM_MODE="$CONF_MODE_SINGLE"
       ;;
     *)
-      printf "Warning: Invalid USM_MODE '%s' detected. Falling back to '%s'.\n" \
-        "${USM_MODE:-}" "$CONF_MODE_SINGLE" >&2
+      printf "Warning: Invalid USM_MODE '%s'. " "${USM_MODE:-}" >&2
+      printf "Falling back to '%s'.\n" "$CONF_MODE_SINGLE" >&2
       USM_MODE="$CONF_MODE_SINGLE"
       ;;
   esac
@@ -572,49 +572,133 @@ usm_get_current_usm_mode() {
 }
 
 # ==============================================================================
-# usm_int_backlight_force_on
+# usm_hw_screen_on
 #
-# Unconditionally forces the internal screen's hardware power and brightness
-# to be turned on.
+# Hardware level function to prepare the screen prior to Wayland engagement.
+# Strictly controls sysfs and DRM states to ensure display hardware is lit
+# before the compositor starts rendering.
 #
 # Globals:
+#   USM_ENABLE_HW_POWER_CONTROL
 #   BRIGHTNESS_MAX
+#   SCREEN_OUT_INT
+#   SCREEN_OUT_EXT
 # Arguments:
-#   None
+#   $1 - target: "DSI" or "HDMI"
 # Outputs:
-#   Writes logs.
+#   Writes to hardware sysfs and logs execution.
 # Returns:
-#   None
+#   0 on success.
 # ==============================================================================
-usm_int_backlight_force_on() {
-  log "Forcing internal screen hardware power and brightness ON."
-  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" == "true" ]]; then
-    usm_set_int_screen_power "on"
+usm_hw_screen_on() {
+  local target="$1"
+  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" != "true" ]]; then
+    return 0
   fi
-  usm_set_int_screen_brightness "$BRIGHTNESS_MAX"
+
+  if [[ "$target" == "DSI" ]]; then
+    local bl_path fb_path bl_val
+    bl_path=$(_get_backlight_path)
+    fb_path=$(_get_fb_path)
+    if [[ -n "$bl_path" ]] && [[ -f "$bl_path/bl_power" ]]; then
+      bl_val=$(cat "$bl_path/bl_power" 2>/dev/null || echo "")
+      if [[ "$bl_val" == "4" ]]; then
+        log "Hardware ON Sequence for DSI"
+        if [[ -n "$fb_path" ]]; then
+          sudo sh -c "echo 0 > $fb_path/blank" 2>/dev/null || true
+        fi
+        sudo sh -c "echo 0 > $bl_path/bl_power" 2>/dev/null || true
+
+        local dsi_stat
+        dsi_stat=$(
+          find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
+            2>/dev/null | head -n 1
+        )
+        if [[ -n "$dsi_stat" ]]; then
+          sudo sh -c "echo detect > $dsi_stat/status" 2>/dev/null || true
+        fi
+
+        usm_set_int_screen_brightness "$BRIGHTNESS_MAX"
+      fi
+    fi
+  elif [[ "$target" == "HDMI" ]]; then
+    log "Hardware ON Sequence for HDMI"
+    local hdmi_stat
+    hdmi_stat=$(
+      find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
+        2>/dev/null | head -n 1
+    )
+    if [[ -n "$hdmi_stat" ]]; then
+      sudo sh -c "echo detect > $hdmi_stat/status" 2>/dev/null || true
+    fi
+  fi
 }
 
 # ==============================================================================
-# usm_int_backlight_force_off
+# usm_hw_screen_off
 #
-# Unconditionally forces the internal screen's hardware power and brightness
-# to be turned off.
+# Hardware level function to cut off power to the screen after Wayland releases
+# it. Properly unbinds DRM states to avoid race conditions.
 #
 # Globals:
-#   BRIGHTNESS_OFF
+#   USM_ENABLE_HW_POWER_CONTROL
+#   USM_HDMI_DRM_FORCE_OFF
+#   SCREEN_OUT_INT
+#   SCREEN_OUT_EXT
 # Arguments:
-#   None
+#   $1 - target: "DSI" or "HDMI"
 # Outputs:
-#   Writes logs.
+#   Writes to hardware sysfs and logs execution.
 # Returns:
-#   None
+#   0 on success.
 # ==============================================================================
-usm_int_backlight_force_off() {
-  log "Forcing internal screen hardware power and brightness OFF."
-  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" == "true" ]]; then
-    usm_set_int_screen_power "off"
+usm_hw_screen_off() {
+  local target="$1"
+  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" != "true" ]]; then
+    return 0
   fi
-  usm_set_int_screen_brightness "$BRIGHTNESS_OFF"
+
+  if [[ "$target" == "DSI" ]]; then
+    local bl_path fb_path bl_val
+    bl_path=$(_get_backlight_path)
+    fb_path=$(_get_fb_path)
+    if [[ -n "$bl_path" ]] && [[ -f "$bl_path/bl_power" ]]; then
+      bl_val=$(cat "$bl_path/bl_power" 2>/dev/null || echo "")
+      if [[ "$bl_val" == "0" ]]; then
+        log "Hardware OFF Sequence for DSI"
+        local dsi_stat
+        dsi_stat=$(
+          find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
+            2>/dev/null | head -n 1
+        )
+        if [[ -n "$dsi_stat" ]]; then
+          sudo sh -c "echo off > $dsi_stat/status" 2>/dev/null || true
+        fi
+
+        if [[ -n "$fb_path" ]]; then
+          sudo sh -c "echo 1 > $fb_path/blank" 2>/dev/null || true
+        fi
+        sudo sh -c "echo 4 > $bl_path/bl_power" 2>/dev/null || true
+
+        usm_set_int_screen_brightness "$BRIGHTNESS_OFF"
+      fi
+    fi
+  elif [[ "$target" == "HDMI" ]]; then
+    if [[ "${USM_HDMI_DRM_FORCE_OFF:-false}" == "true" ]]; then
+      log "Hardware OFF Sequence for HDMI (DRM status=off, HPD disabled)"
+      local hdmi_stat
+      hdmi_stat=$(
+        find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
+          2>/dev/null | head -n 1
+      )
+      if [[ -n "$hdmi_stat" ]]; then
+        sudo sh -c "echo off > $hdmi_stat/status" 2>/dev/null || true
+      fi
+    else
+      # Bypass DRM 'off' for HDMI to preserve Hot Plug Detect (HPD).
+      log "Hardware OFF for HDMI bypassed to preserve udev HPD events."
+    fi
+  fi
 }
 
 # ==============================================================================
@@ -682,45 +766,7 @@ usm_set_int_screen_brightness() {
 }
 
 
-# ==============================================================================
-# usm_set_int_screen_power
-#
-# Forces the internal screen power to ON or OFF by writing to both backlight
-# power and framebuffer blank sysfs interfaces.
-#
-# Globals:
-#   None
-# Arguments:
-#   $1 - target state: "on" or "off".
-# Outputs:
-#   None
-# Returns:
-#   0 on success, 1 on failure.
-# ==============================================================================
-usm_set_int_screen_power() {
-  local state="${1:-on}"
-  local bl_path
-  bl_path=$(_get_backlight_path)
-  local fb_path
-  fb_path=$(_get_fb_path)
 
-  local fb_val="0"
-  local bl_val="0"
-  if [[ "$state" == "off" ]]; then
-    fb_val="1"
-    bl_val="4"
-  fi
-
-  if [[ -n "$fb_path" ]]; then
-    log "Hardware write: $fb_val -> $fb_path/blank"
-    sudo sh -c "echo $fb_val > $fb_path/blank" 2>/dev/null || true
-  fi
-
-  if [[ -n "$bl_path" ]]; then
-    log "Hardware write: $bl_val -> $bl_path/bl_power"
-    sudo sh -c "echo $bl_val > $bl_path/bl_power" 2>/dev/null || true
-  fi
-}
 
 
 ################################################################################
@@ -1604,13 +1650,15 @@ cmd_log_disable() {
 #   0 on success, 1 on failure.
 #
 # Flow:
-#   [wlr-randr: target mode] --> [usm_int_backlight_force_on]
+#   [usm_hw_screen_on] --> [wlr-randr: target mode] --> [usm_hw_screen_off]
 #
-# Hardware backlight must be applied after DRM connector is active.
+# Hardware must be powered on before Wayland configures the DRM connector.
 # ==============================================================================
 cmd_screen_int() {
   log "Starting cmd_screen_int."
   local ret=0
+
+  usm_hw_screen_on "DSI"
 
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
@@ -1619,7 +1667,7 @@ cmd_screen_int() {
   log "First exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
-    usm_int_backlight_force_on
+    usm_hw_screen_off "HDMI"
     notify_user "Internal Screen Enabled"
     log "Successfully set to internal screen."
     return 0
@@ -1652,7 +1700,7 @@ cmd_screen_int() {
     "$SCREEN_RES_1024_768" || ret=$?
 
   if [[ $ret -eq 0 ]]; then
-    usm_int_backlight_force_on
+    usm_hw_screen_off "HDMI"
   fi
   log "Fallback internal enable returned: $ret"
   return "$ret"
@@ -1679,6 +1727,9 @@ cmd_screen_int() {
 cmd_screen_ext() {
   log "Starting cmd_screen_ext."
   local ret=0
+
+  usm_hw_screen_on "HDMI"
+
   exec_wlr_randr \
     "$SCREEN_ENABLED_NO" \
     "$SCREEN_ENABLED_YES" \
@@ -1686,7 +1737,7 @@ cmd_screen_ext() {
   log "First exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
-    usm_int_backlight_force_off
+    usm_hw_screen_off "DSI"
     notify_user "External Screen Enabled"
     log "Successfully set to external screen."
     return 0
@@ -1721,13 +1772,16 @@ cmd_screen_ext() {
 #   0 on success, 1 on failure.
 #
 # Flow:
-#   [wlr-randr: target mode] --> [usm_int_backlight_force_on]
+#   [usm_hw_screen_on] --> [wlr-randr: target mode]
 #
-# Hardware backlight must be applied after DRM connector is active.
+# Hardware must be powered on before Wayland configures the DRM connector.
 # ==============================================================================
 cmd_screen_dual() {
   log "Starting cmd_screen_dual."
   local ret=0
+
+  usm_hw_screen_on "DSI"
+  usm_hw_screen_on "HDMI"
 
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
@@ -1746,7 +1800,6 @@ cmd_screen_dual() {
   log "Second exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
-    usm_int_backlight_force_on
     notify_user "Dual Screen Enabled"
     log "Successfully set to dual screen."
     return 0
@@ -1809,7 +1862,7 @@ cmd_screen_off() {
 
   if [[ $ret -eq 0 ]]; then
     # Completely cut off internal screen power and backlight
-    usm_int_backlight_force_off
+    usm_hw_screen_off "DSI"
     notify_user "Screen Turned Off"
     log "Successfully turned off internal screen."
   else

@@ -153,6 +153,23 @@ an asynchronous audio management layer.
    Running `usm hdmi-audio-on` safely enables audio for media consumption,
    and `usm hdmi-audio-off` disables it before unplugging the display.
 
+### H. Decoupled Hardware Power Control Layer
+
+To prevent atomic commit race conditions between the Linux DRM subsystem and
+the Wayland compositor (`wlr-randr`), USM enforces a strict 3-stage hardware
+and software decoupling logic. This is controlled by the config flag
+`USM_ENABLE_HW_POWER_CONTROL`:
+
+1.  **Hardware ON (Pre-flight):** Before instructing Wayland to enable a screen,
+    USM forces the DRM sysfs `status` to `detect` and wakes up the framebuffer
+    (`fb0/blank=0`) and backlight (`bl_power=0`). This ensures the hardware is
+    awake and ready to accept Wayland's configurations.
+2.  **Software Switch:** Wayland (`wlr-randr`) takes control and attaches or
+    detaches outputs safely without deadlocking the kernel.
+3.  **Hardware OFF (Post-flight):** After Wayland successfully releases an
+    output, USM manually cuts off power by setting the DRM `status` to `off`,
+    blinding the framebuffer (`blank=1`), and dropping backlight PWM to `0`.
+
 ---
 
 
@@ -313,6 +330,21 @@ Raspberry Pi OS 的 `vc4-hdmi` 驅動存在一個已知的硬體缺陷：當 Pip
    `pw-cli` 操作。當需要享受影音時，只需執行 `usm hdmi-audio-on` 即可安全
    喚醒音效 (Digital Stereo)；而在拔除螢幕前，執行 `usm hdmi-audio-off`
    即可安全釋放佔用，保障系統穩定。
+
+### H. 軟硬體解耦與實體電源控制 (Hardware Power Control Layer)
+
+為了解決 Linux DRM 子系統與 Wayland 合成器 (`wlr-randr`) 之間搶奪控制權
+而導致的 Deadlock (Atomic Commit Race Condition)，USM 導入了嚴格的三段
+式解耦邏輯。此功能由設定檔中的 `USM_ENABLE_HW_POWER_CONTROL` 參數控制：
+
+1.  **硬體先行喚醒 (Hardware ON)**：在指示 Wayland 啟用螢幕前，USM 會直接對
+    sysfs 下達指令，將 DRM `status` 強制設為 `detect`，並喚醒 Framebuffer
+    (`fb0/blank=0`) 與背光 (`bl_power=0`)，確保底層硬體處於 Ready 狀態。
+2.  **軟體接管 (Software Switch)**：執行 `wlr-randr` 讓 Wayland 安全地掛載或
+    釋放顯示資源。
+3.  **硬體實體斷電 (Hardware OFF)**：在 Wayland 成功釋放該螢幕後，USM 才會將
+    DRM `status` 設為 `off`、遮蔽 Framebuffer (`blank=1`) 並將背光亮度歸零，
+    實現最深度的硬體省電。
 
 
 ### 自定義腳本架構 (Custom Hooks Architecture)
