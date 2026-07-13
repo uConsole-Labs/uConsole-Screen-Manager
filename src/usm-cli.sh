@@ -31,7 +31,9 @@ readonly BRIGHTNESS_OFF="0"
 readonly CONF_MODE_DUAL="dual"
 readonly CONF_MODE_SINGLE="single"
 readonly FLAG_NO="no"
+readonly FLAG_SILENT="--silent"
 readonly FLAG_YES="yes"
+readonly PANEL_DRIVER_PATH="/sys/bus/mipi-dsi/drivers/panel-cwu50"
 readonly MODE_DUAL="dual"
 readonly MODE_EXT="ext"
 readonly MODE_INT="int"
@@ -50,6 +52,10 @@ readonly SCREEN_TRANS_NORMAL="normal"
 readonly SCREEN_TRANS_RIGHT="270"
 readonly STATE_HDMI_CONN="connected"
 readonly STATE_HDMI_DISC="disconnected"
+readonly SYSFS_BACKLIGHT_POWER_OFF="4"
+readonly SYSFS_BACKLIGHT_POWER_ON="0"
+readonly SYSFS_FRAMEBUFFER_BLANK="1"
+readonly SYSFS_FRAMEBUFFER_UNBLANK="0"
 
 # --- 5. Audio ---
 readonly AUDIO_DEVICE_HDMI="vc4-hdmi"
@@ -149,18 +155,21 @@ show_usage() {
   printf "  screen-dual  Switch output to both displays\n"
   printf "  screen-on    Turn on screens based on detected hardware and mode\n"
   printf "  screen-off   Turn off all screens\n"
-  printf "  swayidle_enable  Enables swayidle by reading autostart config.\n"
-  printf "  swayidle_disable Disables swayidle by terminating its process.\n"
+  printf "  screen-reset [%s] Reset DSI panel state via safe hotplug\n" \
+         "$FLAG_SILENT"
+  printf "  swayidle-enable  Enables swayidle by reading autostart config.\n"
+  printf "  swayidle-disable Disables swayidle by terminating its process.\n"
   printf "  status       Print current service and display status\n"
   printf "  start        Start the USM background service\n"
   printf "  stop         Stop the USM background service\n"
   printf "  restart      Restart the USM background service\n"
-  printf "  log_enable   Enable file logging\n"
-  printf "  log_disable  Disable file logging\n"
+  printf "  log-enable   Enable file logging\n"
+  printf "  log-disable  Disable file logging\n"
   printf "  hdmi-audio-on    Enable HDMI audio devices (Digital Stereo)\n"
   printf "  hdmi-audio-off   Disable HDMI audio devices to prevent crashes\n"
   printf "  hdmi-audio-state Print current state of HDMI audio devices\n"
   printf "  notify-test  Test desktop notification\n"
+  printf "  hw_status    Print all hardware parameters\n"
   printf "  version      Print version information\n"
 }
 
@@ -169,6 +178,24 @@ show_usage() {
 # 2. Config & Init
 ################################################################################
 
+# ==============================================================================
+# set_sysfs_val
+#
+# Writes a value to a sysfs path using sudo tee.
+#
+# Arguments:
+#   $1 - The sysfs path
+#   $2 - The value to write
+# Returns:
+#   0 on success.
+# ==============================================================================
+set_sysfs_val() {
+  local path="$1"
+  local val="$2"
+  if [[ -n "$path" && -n "$val" ]]; then
+    echo "$val" | sudo tee "$path" >/dev/null 2>/dev/null || true
+  fi
+}
 
 # ==============================================================================
 # set_log_file_var
@@ -334,7 +361,6 @@ setup_runtime_dir() {
 ################################################################################
 # 3. Hardware & State
 ################################################################################
-
 
 # ==============================================================================
 # check_hdmi_state
@@ -560,14 +586,14 @@ usm_get_current_usm_mode() {
 
   if [[ $has_ext -eq 0 ]]; then
     if [[ "${USM_MODE:-$CONF_MODE_SINGLE}" == "$CONF_MODE_SINGLE" ]]; then
-      echo "$MODE_EXT"
+      printf "%s\n" "$MODE_EXT"
     else
-      echo "$MODE_DUAL"
+      printf "%s\n" "$MODE_DUAL"
     fi
   elif [[ $has_int -eq 0 ]]; then
-    echo "$MODE_INT"
+    printf "%s\n" "$MODE_INT"
   else
-    echo "$MODE_NONE"
+    printf "%s\n" "$MODE_NONE"
   fi
 }
 
@@ -602,12 +628,16 @@ usm_hw_screen_on() {
     fb_path=$(_get_fb_path)
     if [[ -n "$bl_path" ]] && [[ -f "$bl_path/bl_power" ]]; then
       bl_val=$(cat "$bl_path/bl_power" 2>/dev/null || echo "")
-      if [[ "$bl_val" == "4" ]]; then
+      if [[ "$bl_val" == "$SYSFS_BACKLIGHT_POWER_OFF" ]]; then
         log "Hardware ON Sequence for DSI"
         if [[ -n "$fb_path" ]]; then
-          sudo sh -c "echo 0 > $fb_path/blank" 2>/dev/null || true
+          log "HW write: $SYSFS_FRAMEBUFFER_UNBLANK (UNBLANK) -> $fb_path/blank"
+          set_sysfs_val "$fb_path/blank" "$SYSFS_FRAMEBUFFER_UNBLANK"
+        else
+          log "Skip DSI ON: fb0/blank path missing."
         fi
-        sudo sh -c "echo 0 > $bl_path/bl_power" 2>/dev/null || true
+        log "HW write: $SYSFS_BACKLIGHT_POWER_ON (ON) -> $bl_path/bl_power"
+        set_sysfs_val "$bl_path/bl_power" "$SYSFS_BACKLIGHT_POWER_ON"
 
         local dsi_stat
         dsi_stat=$(
@@ -615,11 +645,19 @@ usm_hw_screen_on() {
             2>/dev/null | head -n 1
         )
         if [[ -n "$dsi_stat" ]]; then
-          sudo sh -c "echo detect > $dsi_stat/status" 2>/dev/null || true
+          log "HW write: detect (FORCE DETECT) -> $dsi_stat/status"
+          set_sysfs_val "$dsi_stat/status" "detect"
+        else
+          log "Skip DSI ON: DRM status node missing."
         fi
 
         usm_set_int_screen_brightness "$BRIGHTNESS_MAX"
+      else
+        local msg="Skip DSI ON: bl_power='$bl_val'."
+        log "$msg Expected: $SYSFS_BACKLIGHT_POWER_OFF (OFF)."
       fi
+    else
+      log "Skip DSI ON: bl_power path missing."
     fi
   elif [[ "$target" == "HDMI" ]]; then
     log "Hardware ON Sequence for HDMI"
@@ -629,7 +667,10 @@ usm_hw_screen_on() {
         2>/dev/null | head -n 1
     )
     if [[ -n "$hdmi_stat" ]]; then
-      sudo sh -c "echo detect > $hdmi_stat/status" 2>/dev/null || true
+      log "HW write: detect (FORCE DETECT) -> $hdmi_stat/status"
+      set_sysfs_val "$hdmi_stat/status" "detect"
+    else
+      log "Skip HDMI ON: DRM status node missing."
     fi
   fi
 }
@@ -664,7 +705,7 @@ usm_hw_screen_off() {
     fb_path=$(_get_fb_path)
     if [[ -n "$bl_path" ]] && [[ -f "$bl_path/bl_power" ]]; then
       bl_val=$(cat "$bl_path/bl_power" 2>/dev/null || echo "")
-      if [[ "$bl_val" == "0" ]]; then
+      if [[ "$bl_val" == "$SYSFS_BACKLIGHT_POWER_ON" ]]; then
         log "Hardware OFF Sequence for DSI"
         local dsi_stat
         dsi_stat=$(
@@ -672,16 +713,28 @@ usm_hw_screen_off() {
             2>/dev/null | head -n 1
         )
         if [[ -n "$dsi_stat" ]]; then
-          sudo sh -c "echo off > $dsi_stat/status" 2>/dev/null || true
+          log "HW write: off (FORCE OFF) -> $dsi_stat/status"
+          set_sysfs_val "$dsi_stat/status" "off"
+        else
+          log "Skip DSI OFF: DRM status node missing."
         fi
 
         if [[ -n "$fb_path" ]]; then
-          sudo sh -c "echo 1 > $fb_path/blank" 2>/dev/null || true
+          log "HW write: $SYSFS_FRAMEBUFFER_BLANK (BLANK) -> $fb_path/blank"
+          set_sysfs_val "$fb_path/blank" "$SYSFS_FRAMEBUFFER_BLANK"
+        else
+          log "Skip DSI OFF: fb0/blank path missing."
         fi
-        sudo sh -c "echo 4 > $bl_path/bl_power" 2>/dev/null || true
+        log "HW write: $SYSFS_BACKLIGHT_POWER_OFF (OFF) -> $bl_path/bl_power"
+        set_sysfs_val "$bl_path/bl_power" "$SYSFS_BACKLIGHT_POWER_OFF"
 
         usm_set_int_screen_brightness "$BRIGHTNESS_OFF"
+      else
+        local msg="Skip DSI OFF: bl_power='$bl_val'."
+        log "$msg Expected: $SYSFS_BACKLIGHT_POWER_ON (ON)."
       fi
+    else
+      log "Skip DSI OFF: bl_power path missing."
     fi
   elif [[ "$target" == "HDMI" ]]; then
     if [[ "${USM_HDMI_DRM_FORCE_OFF:-false}" == "true" ]]; then
@@ -692,7 +745,10 @@ usm_hw_screen_off() {
           2>/dev/null | head -n 1
       )
       if [[ -n "$hdmi_stat" ]]; then
-        sudo sh -c "echo off > $hdmi_stat/status" 2>/dev/null || true
+        log "HW write: off (FORCE OFF) -> $hdmi_stat/status"
+        set_sysfs_val "$hdmi_stat/status" "off"
+      else
+        log "Skip HDMI OFF: DRM status node missing."
       fi
     else
       # Bypass DRM 'off' for HDMI to preserve Hot Plug Detect (HPD).
@@ -760,7 +816,7 @@ usm_set_int_screen_brightness() {
   bl_path=$(_get_backlight_path)
   if [[ -n "$bl_path" ]]; then
     log "Hardware write: $target_brightness -> $bl_path/brightness"
-    sudo sh -c "echo $target_brightness > $bl_path/brightness" \
+    set_sysfs_val "$bl_path/brightness" "$target_brightness" \
       2>/dev/null || true
   fi
 }
@@ -773,6 +829,95 @@ usm_set_int_screen_brightness() {
 # 4. Wayland & Swayidle
 ################################################################################
 
+# ==============================================================================
+# _build_wlr_internal_cmd
+#
+# Helper function to build the wlr-randr internal screen parameters.
+#
+# Globals:
+#   SCREEN_ENABLED_SKIP, SCREEN_OUT_INT, SCREEN_ENABLED_YES,
+#   SCREEN_RES_720_1280, SCREEN_TRANS_RIGHT, SCREEN_POS_INT
+# Arguments:
+#   $1 - int_enabled: SCREEN_ENABLED_YES or SCREEN_ENABLED_NO or SKIP
+#   $2 - has_int: 0 if detected, 1 if not
+#   $3 - int_ref_cmd: nameref to the array holding the command
+# Outputs:
+#   Writes logs to stdout/log file.
+# Returns:
+#   0 on success.
+# ==============================================================================
+_build_wlr_internal_cmd() {
+  local int_enabled="$1"
+  local has_int="$2"
+  local -n int_ref_cmd="$3"
+
+  if [[ "$int_enabled" == "$SCREEN_ENABLED_SKIP" ]]; then
+    log "Internal screen ($SCREEN_OUT_INT) config explicitly skipped."
+  elif [[ "$has_int" -eq 0 ]]; then
+    local int_state="--off"
+    if [[ "$int_enabled" == "$SCREEN_ENABLED_YES" ]]; then
+      int_state="--on"
+    fi
+
+    int_ref_cmd+=(
+      "--output" "$SCREEN_OUT_INT"
+      "$int_state"
+      "--mode" "$SCREEN_RES_720_1280"
+      "--transform" "$SCREEN_TRANS_RIGHT"
+      "--pos" "$SCREEN_POS_INT"
+    )
+    log "Internal screen ($SCREEN_OUT_INT) config added."
+  else
+    log "Internal screen ($SCREEN_OUT_INT) not detected. Skipped."
+  fi
+  return 0
+}
+
+# ==============================================================================
+# _build_wlr_external_cmd
+#
+# Helper function to build the wlr-randr external screen parameters.
+#
+# Globals:
+#   SCREEN_ENABLED_SKIP, SCREEN_OUT_EXT, SCREEN_ENABLED_YES,
+#   SCREEN_TRANS_NORMAL, SCREEN_POS_EXT
+# Arguments:
+#   $1 - ext_enabled: SCREEN_ENABLED_YES or SCREEN_ENABLED_NO or SKIP
+#   $2 - has_ext: 0 if detected, 1 if not
+#   $3 - ext_mode: The resolution/mode to apply
+#   $4 - ext_ref_cmd: nameref to the array holding the command
+# Outputs:
+#   Writes logs to stdout/log file.
+# Returns:
+#   0 on success.
+# ==============================================================================
+_build_wlr_external_cmd() {
+  local ext_enabled="$1"
+  local has_ext="$2"
+  local ext_mode="$3"
+  local -n ext_ref_cmd="$4"
+
+  if [[ "$ext_enabled" == "$SCREEN_ENABLED_SKIP" ]]; then
+    log "External screen ($SCREEN_OUT_EXT) config explicitly skipped."
+  elif [[ "$has_ext" -eq 0 ]]; then
+    local ext_state="--off"
+    if [[ "$ext_enabled" == "$SCREEN_ENABLED_YES" ]]; then
+      ext_state="--on"
+    fi
+
+    ext_ref_cmd+=(
+      "--output" "$SCREEN_OUT_EXT"
+      "$ext_state"
+      "--mode" "$ext_mode"
+      "--transform" "$SCREEN_TRANS_NORMAL"
+      "--pos" "$SCREEN_POS_EXT"
+    )
+    log "External screen ($SCREEN_OUT_EXT) config added."
+  else
+    log "External screen ($SCREEN_OUT_EXT) not detected. Skipped."
+  fi
+  return 0
+}
 
 # ==============================================================================
 # exec_wlr_randr
@@ -804,10 +949,7 @@ exec_wlr_randr() {
 
   auto_update_wayland_display
 
-  # Step a: Init empty command array.
   local full_cmd=(wlr-randr)
-
-  # Query all connected outputs once.
   local wlr_output
   local rc_wlr=0
   wlr_output=$(wlr-randr 2>&1) || rc_wlr=$?
@@ -821,12 +963,11 @@ exec_wlr_randr() {
 
   local active_outputs=()
   mapfile -t active_outputs < <(
-    echo "$wlr_output" \
+    printf "%s\n" "$wlr_output" \
       | grep -E "^[a-zA-Z0-9_-]+" \
       | awk '{print $1}'
   )
 
-  # Check which screens are active
   local has_int=1
   local has_ext=1
   local o
@@ -840,47 +981,8 @@ exec_wlr_randr() {
 
   log "Detected outputs: ${active_outputs[*]}"
 
-  # Step b: Build internal screen command.
-  if [[ "$int_enabled" == "$SCREEN_ENABLED_SKIP" ]]; then
-    log "Internal screen ($SCREEN_OUT_INT) config explicitly skipped."
-  elif [[ $has_int -eq 0 ]]; then
-    local int_state="--off"
-    if [[ "$int_enabled" == "$SCREEN_ENABLED_YES" ]]; then
-      int_state="--on"
-    fi
-
-    full_cmd+=(
-      "--output" "$SCREEN_OUT_INT"
-      "$int_state"
-      "--mode" "$SCREEN_RES_720_1280"
-      "--transform" "$SCREEN_TRANS_RIGHT"
-      "--pos" "$SCREEN_POS_INT"
-    )
-    log "Internal screen ($SCREEN_OUT_INT) config added."
-  else
-    log "Internal screen ($SCREEN_OUT_INT) not detected. Skipped."
-  fi
-
-  # Step c: Build external screen command.
-  if [[ "$ext_enabled" == "$SCREEN_ENABLED_SKIP" ]]; then
-    log "External screen ($SCREEN_OUT_EXT) config explicitly skipped."
-  elif [[ $has_ext -eq 0 ]]; then
-    local ext_state="--off"
-    if [[ "$ext_enabled" == "$SCREEN_ENABLED_YES" ]]; then
-      ext_state="--on"
-    fi
-
-    full_cmd+=(
-      "--output" "$SCREEN_OUT_EXT"
-      "$ext_state"
-      "--mode" "$ext_mode"
-      "--transform" "$SCREEN_TRANS_NORMAL"
-      "--pos" "$SCREEN_POS_EXT"
-    )
-    log "External screen ($SCREEN_OUT_EXT) config added."
-  else
-    log "External screen ($SCREEN_OUT_EXT) not detected. Skipped."
-  fi
+  _build_wlr_internal_cmd "$int_enabled" "$has_int" full_cmd
+  _build_wlr_external_cmd "$ext_enabled" "$has_ext" "$ext_mode" full_cmd
 
   log "Final command: ${full_cmd[*]}"
 
@@ -1872,6 +1974,76 @@ cmd_screen_off() {
 }
 
 # ==============================================================================
+# cmd_screen_reset
+#
+# Safely resets the DSI panel state machine by coordinating Wayland
+# and kernel driver hotplugging to avoid compositor crashes.
+# Prints recent cwu50 driver errors before prompting for confirmation.
+#
+# Globals:
+#   FLAG_SILENT
+#   PANEL_DRIVER_PATH
+#   SCREEN_OUT_INT
+# Arguments:
+#   $1 - mode: Set to $FLAG_SILENT to bypass the confirmation prompt.
+# Outputs:
+#   Writes unbind/bind commands to sysfs and logs progress to stdout.
+# Returns:
+#   0 on success, 1 on error if no DSI device is found or user aborts.
+# ==============================================================================
+cmd_screen_reset() {
+  local mode="${1:-}"
+  log "Starting cmd_screen_reset (Safe DSI Hotplug Sequence)."
+  local dsi_dev
+  local dsi_match=("$PANEL_DRIVER_PATH"/*.dsi.*)
+    if [[ -e "${dsi_match[0]}" ]]; then
+      dsi_dev=$(basename "${dsi_match[0]}")
+    else
+      dsi_dev=""
+    fi
+
+  if [[ -z "$dsi_dev" ]]; then
+    log "Error: No DSI device found in $PANEL_DRIVER_PATH."
+    return 1
+  fi
+
+  if [[ "$mode" != "$FLAG_SILENT" ]]; then
+    printf "Recent cwu50 driver errors:\n"
+    dmesg | grep "cwu50" | grep -i "failed to" | tail -n 10 || \
+      printf "  (No 'failed to' errors found)\n"
+    printf "\n"
+
+    local confirm
+    read -r -p "Reset the DSI panel state? [y/N]: " confirm
+    case "$confirm" in
+      [yY][eE][sS]|[yY])
+        ;;
+      *)
+        log "cmd_screen_reset aborted by user."
+        return 1
+        ;;
+    esac
+  fi
+
+  log "1. Soft Disconnect: Releasing Wayland output $SCREEN_OUT_INT..."
+  wlr-randr --output "$SCREEN_OUT_INT" --off
+  sleep 1
+
+  log "2. Hard Disconnect: Unbinding driver for $dsi_dev..."
+  echo "$dsi_dev" | sudo tee "$PANEL_DRIVER_PATH/unbind" > /dev/null
+  sleep 1
+
+  log "3. Hard Reconnect: Binding driver to force init sequence..."
+  echo "$dsi_dev" | sudo tee "$PANEL_DRIVER_PATH/bind" > /dev/null
+  sleep 1
+
+  log "4. Soft Reconnect: Resuming Wayland output $SCREEN_OUT_INT..."
+  wlr-randr --output "$SCREEN_OUT_INT" --on
+  log "cmd_screen_reset completed."
+  return 0
+}
+
+# ==============================================================================
 # cmd_screen_on
 #
 # Enables screens based on detected hardware via wlr-randr and the configured
@@ -1954,6 +2126,178 @@ cmd_notify_test() {
 }
 
 # ==============================================================================
+# _print_hw_internal_screen
+#
+# Helper function to print internal hardware screen status.
+#
+# Globals:
+#   SCREEN_OUT_INT, PANEL_DRIVER_PATH, SYSFS_BACKLIGHT_POWER_ON
+#   SYSFS_BACKLIGHT_POWER_OFF, SYSFS_FRAMEBUFFER_UNBLANK,
+#   SYSFS_FRAMEBUFFER_BLANK
+# Arguments:
+#   $1 - fb_int: internal framebuffer path
+# Outputs:
+#   Writes status to stdout.
+# Returns:
+#   0 on success.
+# ==============================================================================
+_print_hw_internal_screen() {
+  local dsi_stat bl_path bl_val fb_name fb_blank fb_mean \
+        st_mean fb_state fb_int
+  fb_int="$1"
+
+  printf "\n[Internal Screen: %s]\n" "$SCREEN_OUT_INT"
+  if [[ -d "$PANEL_DRIVER_PATH" ]]; then
+    printf "  Panel Driver: Loaded (%s)\n" "$(basename "$PANEL_DRIVER_PATH")"
+  else
+    printf "  Panel Driver: Not Loaded\n"
+  fi
+
+  dsi_stat=$(find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
+    2>/dev/null | head -n 1)
+  if [[ -n "$dsi_stat" ]] && [[ -f "$dsi_stat/status" ]]; then
+    printf "  DRM Status: %s\n" \
+      "$(cat "$dsi_stat/status" 2>/dev/null || printf "%s\n" "error")"
+  else
+    printf "  DRM Status: Not Found\n"
+  fi
+
+  bl_path=$(_get_backlight_path)
+  if [[ -n "$bl_path" ]]; then
+    if [[ -f "$bl_path/bl_power" ]]; then
+      bl_val=$(cat "$bl_path/bl_power" 2>/dev/null)
+      bl_mean="Unknown"
+      [[ "$bl_val" == "$SYSFS_BACKLIGHT_POWER_ON" ]] && bl_mean="ON"
+      [[ "$bl_val" == "$SYSFS_BACKLIGHT_POWER_OFF" ]] && bl_mean="OFF"
+      printf "  Backlight Power: %s (%s)\n" "$bl_val" "$bl_mean"
+    fi
+    if [[ -f "$bl_path/brightness" ]]; then
+      printf "  Backlight Brightness: %s\n" \
+        "$(cat "$bl_path/brightness" 2>/dev/null)"
+    fi
+  else
+    printf "  Backlight: Not Found\n"
+  fi
+
+  if [[ -n "$fb_int" ]]; then
+    fb_name=$(cat "$fb_int/name")
+    fb_blank=$(cat "$fb_int/blank" 2>/dev/null)
+    [[ -z "$fb_blank" ]] && fb_blank="N/A"
+    fb_mean=""
+    [[ "$fb_blank" == "$SYSFS_FRAMEBUFFER_UNBLANK" ]] && fb_mean=" (UNBLANK/ON)"
+    [[ "$fb_blank" == "$SYSFS_FRAMEBUFFER_BLANK" ]] || \
+      [[ "$fb_blank" == "4" ]] && fb_mean=" (BLANK/OFF)"
+    printf "  Framebuffer Blank (%s): %s%s\n" "$fb_name" "$fb_blank" "$fb_mean"
+
+    fb_state=$(cat "$fb_int/state" 2>/dev/null)
+    [[ -z "$fb_state" ]] && fb_state="N/A"
+    st_mean=""
+    [[ "$fb_state" == "0" ]] && st_mean=" (Normal/Running)"
+    [[ "$fb_state" == "1" ]] && st_mean=" (Suspended)"
+    printf "  Framebuffer State (%s): %s%s\n" "$fb_name" "$fb_state" "$st_mean"
+  fi
+}
+
+# ==============================================================================
+# _print_hw_external_screen
+#
+# Helper function to print external hardware screen status.
+#
+# Globals:
+#   SCREEN_OUT_EXT, SYSFS_FRAMEBUFFER_UNBLANK, SYSFS_FRAMEBUFFER_BLANK
+# Arguments:
+#   $1 - fb_ext: external framebuffer path
+# Outputs:
+#   Writes status to stdout.
+# Returns:
+#   0 on success.
+# ==============================================================================
+_print_hw_external_screen() {
+  local hdmi_stat fb_name fb_blank fb_mean st_mean fb_state fb_ext
+  fb_ext="$1"
+
+  printf "\n[External Screen: %s]\n" "$SCREEN_OUT_EXT"
+  hdmi_stat=$(find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
+    2>/dev/null | head -n 1)
+  if [[ -n "$hdmi_stat" ]]; then
+    local card_name card_base driver_path
+    card_name=$(basename "$hdmi_stat")
+    card_base=${card_name%%-*}
+    if [[ -e "/sys/class/drm/$card_base/device/driver" ]]; then
+      driver_path=$(readlink -f "/sys/class/drm/$card_base/device/driver" \
+        2>/dev/null)
+      printf "  Display Driver: Loaded (%s)\n" "$(basename "$driver_path")"
+    else
+      printf "  Display Driver: Not Loaded\n"
+    fi
+
+    if [[ -f "$hdmi_stat/status" ]]; then
+      printf "  DRM Status: %s\n" \
+      "$(cat "$hdmi_stat/status" 2>/dev/null || printf "%s\n" "error")"
+    else
+      printf "  DRM Status: Not Found\n"
+    fi
+  else
+    printf "  DRM Status: Not Found\n"
+  fi
+
+  if [[ -n "$fb_ext" ]]; then
+    fb_name=$(cat "$fb_ext/name")
+    fb_blank=$(cat "$fb_ext/blank" 2>/dev/null)
+    [[ -z "$fb_blank" ]] && fb_blank="N/A"
+    fb_mean=""
+    [[ "$fb_blank" == "$SYSFS_FRAMEBUFFER_UNBLANK" ]] && fb_mean=" (UNBLANK/ON)"
+    [[ "$fb_blank" == "$SYSFS_FRAMEBUFFER_BLANK" ]] || \
+      [[ "$fb_blank" == "4" ]] && fb_mean=" (BLANK/OFF)"
+    printf "  Framebuffer Blank (%s): %s%s\n" "$fb_name" "$fb_blank" "$fb_mean"
+
+    fb_state=$(cat "$fb_ext/state" 2>/dev/null)
+    [[ -z "$fb_state" ]] && fb_state="N/A"
+    st_mean=""
+    [[ "$fb_state" == "0" ]] && st_mean=" (Normal/Running)"
+    [[ "$fb_state" == "1" ]] && st_mean=" (Suspended)"
+    printf "  Framebuffer State (%s): %s%s\n" "$fb_name" "$fb_state" "$st_mean"
+  fi
+}
+
+# ==============================================================================
+# cmd_hw_status
+#
+# Prints real-time hardware status of panels, DRM, and backlight.
+#
+# Globals:
+#   DRM_PATH, PANEL_DRIVER_PATH, SCREEN_*, SYSFS_*, AUDIO_DEVICE_HDMI
+# Arguments:
+#   None
+# Outputs:
+#   Writes hardware parameters to stdout.
+# Returns:
+#   0 on success.
+# ==============================================================================
+cmd_hw_status() {
+  printf "%s\n" "--- Hardware Status ---"
+  local fb_path fb_name
+  local fb_int=""
+  local fb_ext=""
+
+  for fb_path in /sys/class/graphics/fb*; do
+    [[ -e "$fb_path" ]] || continue
+    fb_name=$(cat "$fb_path/name" 2>/dev/null || printf "%s\n" "Unknown")
+    if [[ "$fb_name" == *"dsi"* ]]; then
+      fb_int="$fb_path"
+    elif [[ "$fb_name" == *"vc4"* ]]; then
+      fb_ext="$fb_path"
+    fi
+  done
+
+  _print_hw_internal_screen "$fb_int"
+  _print_hw_external_screen "$fb_ext"
+
+  cmd_hdmi_audio_state
+  printf "\n-----------------------\n"
+}
+
+# ==============================================================================
 # cmd_status
 #
 # Prints the current USM service status, active display resolutions,
@@ -1969,7 +2313,7 @@ cmd_notify_test() {
 #   0 on success.
 # ==============================================================================
 cmd_status() {
-  printf "--- USM Status ---\n"
+  printf "%s\n" "--- USM Status ---"
   local rc=0
 
   systemctl --user status "$SVC_NAME" \
@@ -1995,7 +2339,7 @@ cmd_status() {
   if [[ $rc -ne 0 ]]; then
     printf "No logs found.\n"
   fi
-  printf "------------------\n"
+  printf "%s\n" "------------------"
 }
 
 # ==============================================================================
@@ -2217,18 +2561,20 @@ main() {
     screen-dual) cmd_screen_dual ;;
     screen-on)   cmd_screen_on ;;
     screen-off)  cmd_screen_off ;;
-    swayidle_enable) start_swayidle ;;
-    swayidle_disable) stop_swayidle ;;
+    screen-reset) cmd_screen_reset "${2:-}" ;;
+    swayidle-enable) start_swayidle ;;
+    swayidle-disable) stop_swayidle ;;
     status)      cmd_status ;;
     start)       cmd_service "start" ;;
     stop)        cmd_service "stop" ;;
     restart)     cmd_service "restart" ;;
-    log_enable)  cmd_log_enable ;;
-    log_disable) cmd_log_disable ;;
+    log-enable)  cmd_log_enable ;;
+    log-disable) cmd_log_disable ;;
     hdmi-audio-on)    cmd_hdmi_audio_on ;;
     hdmi-audio-off)   cmd_hdmi_audio_off ;;
     hdmi-audio-state) cmd_hdmi_audio_state ;;
     notify-test) cmd_notify_test ;;
+    hw_status)   cmd_hw_status ;;
     version)     printf "USM Version: %s\n" "$USM_VERSION" ;;
     *)
       log "Error: Unknown command '$1'"

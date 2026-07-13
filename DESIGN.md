@@ -170,6 +170,16 @@ and software decoupling logic. This is controlled by the config flag
     output, USM manually cuts off power by setting the DRM `status` to `off`,
     blinding the framebuffer (`blank=1`), and dropping backlight PWM to `0`.
 
+### I. Hardware Status Diagnostics
+
+To assist with troubleshooting display issues, USM provides a dedicated
+`hw_status` command. This diagnostic tool queries the Linux `sysfs` directly
+to aggregate and report the real-time hardware state for both the internal
+and external displays. It includes the DRM connection status, Panel Driver
+loading state, Backlight power/brightness values, and the Framebuffer blank
+and running states, giving users deep visibility into the underlying hardware
+outside of Wayland's software state.
+
 ---
 
 
@@ -346,6 +356,13 @@ Raspberry Pi OS 的 `vc4-hdmi` 驅動存在一個已知的硬體缺陷：當 Pip
     DRM `status` 設為 `off`、遮蔽 Framebuffer (`blank=1`) 並將背光亮度歸零，
     實現最深度的硬體省電。
 
+### I. 硬體狀態診斷 (Hardware Status Diagnostics)
+
+為協助排解顯示輸出問題，USM 提供專屬的 `hw_status` 診斷指令。此工具會直接向
+Linux `sysfs` 查詢並彙整內外螢幕的即時硬體狀態。其回報內容涵蓋了 DRM 連線狀態、
+面板驅動 (Panel Driver) 載入情形、背光 (Backlight) 電源與亮度數值，以及 Framebuffer
+的休眠與運作狀態。這項機制讓使用者在 Wayland 軟體層之外，能深入透視底層硬體的
+真實運作情況。
 
 ### 自定義腳本架構 (Custom Hooks Architecture)
 USM 提供輕量級的 Hook 機制。使用者只需將 shell 腳本放置於

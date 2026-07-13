@@ -48,9 +48,12 @@ Type `usm` in your terminal to see all available commands:
 * `usm notify-test` : Test desktop notifications (requires mako).
 * `usm hdmi-audio-on` : Enable HDMI audio devices.
 * `usm hdmi-audio-off`: Disable HDMI audio devices (prevents kernel crash).
-* `usm swayidle_enable` : Enable swayidle by reading autostart config.
-* `usm swayidle_disable` : Disable swayidle by terminating its process.
+* `usm swayidle-enable` : Enable swayidle by reading autostart config.
+* `usm swayidle-disable` : Disable swayidle by terminating its process.
+* `usm log-enable`    : Enable file logging.
+* `usm log-disable`   : Disable file logging.
 * `usm hdmi-audio-state`: Print current state of HDMI audio devices.
+* `usm hw_status`     : Print detailed hardware and driver status.
 * `usm version`     : Print version information.
 * `usm read-conf`   : Print the current usm.conf.
 
@@ -191,9 +194,12 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 * `usm notify-test` : 測試桌面通知功能 (需安裝 mako)。
 * `usm hdmi-audio-on` : 開啟 HDMI 音效輸出。
 * `usm hdmi-audio-off`: 關閉 HDMI 音效輸出 (能預防拔插當機 Bug)。
-* `usm swayidle_enable` : 從 autostart 設定讀取並啟用螢幕休眠管理。
-* `usm swayidle_disable`: 強制關閉螢幕休眠管理進程。
+* `usm swayidle-enable` : 從 autostart 設定讀取並啟用螢幕休眠管理。
+* `usm swayidle-disable`: 強制關閉螢幕休眠管理進程。
+* `usm log-enable`    : 啟用日誌寫入功能。
+* `usm log-disable`   : 停用日誌寫入功能。
 * `usm hdmi-audio-state`: 顯示目前的 HDMI 音效狀態。
+* `usm hw_status`     : 印出詳細的硬體與驅動程式狀態。
 * `usm version`     : 顯示當前版本號碼。
 * `usm read-conf`   : 印出目前的設定檔內容。
 
