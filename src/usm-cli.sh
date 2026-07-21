@@ -155,6 +155,7 @@ show_usage() {
   printf "  screen-dual  Switch output to both displays\n"
   printf "  screen-on    Turn on screens based on detected hardware and mode\n"
   printf "  screen-off   Turn off all screens\n"
+  printf "  screen-switch Toggle screen state (on to off, off to on)\n"
   printf "  screen-reset [%s] Reset DSI panel state via safe hotplug\n" \
          "$FLAG_SILENT"
   printf "  swayidle-enable  Enables swayidle by reading autostart config.\n"
@@ -2106,6 +2107,47 @@ cmd_screen_on() {
 }
 
 # ==============================================================================
+# cmd_screen_switch
+#
+# Toggles the screen state. If the external screen is on, the action is
+# disabled. Otherwise, if the internal screen is on, it calls cmd_screen_off;
+# if it is off, it calls cmd_screen_on.
+#
+# Globals:
+#   SCREEN_OUT_EXT
+#   SCREEN_OUT_INT
+# Arguments:
+#   None
+# Outputs:
+#   Writes execution logs to stdout/log file.
+# Returns:
+#   0 on success, 1 on failure.
+# ==============================================================================
+cmd_screen_switch() {
+  log "Starting cmd_screen_switch."
+
+  local ext_on=1
+  usm_is_screen_on "$SCREEN_OUT_EXT" && ext_on=0
+
+  if [[ $ext_on -eq 0 ]]; then
+    log "External screen is active. screen-switch is disabled."
+    notify_user "Screen-switch disabled in Dual/Ext mode."
+    return 1
+  fi
+
+  local int_on=1
+  usm_is_screen_on "$SCREEN_OUT_INT" && int_on=0
+
+  if [[ $int_on -eq 0 ]]; then
+    log "Internal screen is on (and external is off). Calling cmd_screen_off."
+    cmd_screen_off
+  else
+    log "Internal screen is off (and external is off). Calling cmd_screen_on."
+    cmd_screen_on
+  fi
+}
+
+# ==============================================================================
 # cmd_notify_test
 #
 # Sends a test desktop notification to verify that the notification
@@ -2561,6 +2603,7 @@ main() {
     screen-dual) cmd_screen_dual ;;
     screen-on)   cmd_screen_on ;;
     screen-off)  cmd_screen_off ;;
+    screen-switch) cmd_screen_switch ;;
     screen-reset) cmd_screen_reset "${2:-}" ;;
     swayidle-enable) start_swayidle ;;
     swayidle-disable) stop_swayidle ;;
