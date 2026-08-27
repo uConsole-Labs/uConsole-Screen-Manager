@@ -869,10 +869,6 @@ _build_wlr_internal_cmd() {
     )
     log "Internal screen ($SCREEN_OUT_INT) config added."
   else
-    if [[ "$int_enabled" == "$SCREEN_ENABLED_YES" ]]; then
-      log "Error: Internal screen ($SCREEN_OUT_INT) requested ON but not detected."
-      return 1
-    fi
     log "Internal screen ($SCREEN_OUT_INT) not detected. Skipped."
   fi
   return 0
@@ -919,10 +915,6 @@ _build_wlr_external_cmd() {
     )
     log "External screen ($SCREEN_OUT_EXT) config added."
   else
-    if [[ "$ext_enabled" == "$SCREEN_ENABLED_YES" ]]; then
-      log "Error: External screen ($SCREEN_OUT_EXT) requested ON but not detected."
-      return 1
-    fi
     log "External screen ($SCREEN_OUT_EXT) not detected. Skipped."
   fi
   return 0
@@ -990,19 +982,8 @@ exec_wlr_randr() {
 
   log "Detected outputs: ${active_outputs[*]}"
 
-  local rc_int=0
-  _build_wlr_internal_cmd "$int_enabled" "$has_int" full_cmd || rc_int=$?
-  if [[ $rc_int -ne 0 ]]; then
-    log "Error: Failed to build internal screen command. Aborting execution."
-    return 1
-  fi
-
-  local rc_ext=0
-  _build_wlr_external_cmd "$ext_enabled" "$has_ext" "$ext_mode" full_cmd || rc_ext=$?
-  if [[ $rc_ext -ne 0 ]]; then
-    log "Error: Failed to build external screen command. Aborting execution."
-    return 1
-  fi
+  _build_wlr_internal_cmd "$int_enabled" "$has_int" full_cmd
+  _build_wlr_external_cmd "$ext_enabled" "$has_ext" "$ext_mode" full_cmd
 
   log "Final command: ${full_cmd[*]}"
 
