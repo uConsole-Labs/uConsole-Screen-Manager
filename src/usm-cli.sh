@@ -14,6 +14,9 @@ readonly VER_FILE="$HOME/.config/usm/VERSION"
 # --- 2. Timeouts & Delays ---
 readonly ASYNC_WAIT_MAX_SEC=10
 readonly DEBOUNCE_SEC=5
+readonly DSI_POLL_INTERVAL_SEC="0.5"
+readonly DSI_POLL_MAX_ATTEMPTS=6
+readonly DSI_POLL_TIMEOUT_SEC=3
 readonly NOTIFY_TIMEOUT_MS=10000
 readonly RETRY_DELAY_SEC=2
 readonly SYSTEMD_RUN_TIMEOUT_SEC="2"
@@ -971,19 +974,40 @@ exec_wlr_randr() {
 
   local has_int=1
   local has_ext=1
+  local noop_output=""
   local o
   for o in "${active_outputs[@]}"; do
     if [[ "$o" == "$SCREEN_OUT_INT" ]]; then
       has_int=0
     elif [[ "$o" == "$SCREEN_OUT_EXT" ]]; then
       has_ext=0
+    elif [[ "$o" =~ ^NOOP ]]; then
+      noop_output="$o"
     fi
   done
 
   log "Detected outputs: ${active_outputs[*]}"
 
+  # Pre-cleanup: Gracefully disable placeholder output (NOOP) if present
+  # to prevent coordinate overlap conflicts.
+  if [[ -n "$noop_output" ]]; then
+    log "Pre-cleanup: Disabling placeholder output $noop_output..."
+    wlr-randr --output "$noop_output" --off >/dev/null 2>&1 || true
+  fi
+
   _build_wlr_internal_cmd "$int_enabled" "$has_int" full_cmd
   _build_wlr_external_cmd "$ext_enabled" "$has_ext" "$ext_mode" full_cmd
+
+  # Prevent blackout: do not disable internal screen if requested external
+  # screen is missing.
+  if [[ "$ext_enabled" == "$SCREEN_ENABLED_YES" && \
+        "$has_ext" -ne 0 && \
+        "$int_enabled" == "$SCREEN_ENABLED_NO" ]]; then
+    local err_msg="Error: External screen ($SCREEN_OUT_EXT) requested ON but "
+    err_msg+="not detected. Aborting to prevent blackout."
+    log "$err_msg"
+    return 1
+  fi
 
   log "Final command: ${full_cmd[*]}"
 
@@ -1537,14 +1561,9 @@ update_display_by_hdmi_state() {
   local current_hdmi_state
   current_hdmi_state=$(check_hdmi_state)
 
-  # 1. Stop if the state has not changed
-  if [[ "$current_hdmi_state" == "$LAST_STATE" ]]; then
-    return 0
-  fi
-
   manage_swayidle "$current_hdmi_state"
 
-  # 2. Find the needed screen mode
+  # Find the needed screen mode
   local target_screen_mode="$MODE_INT"
   if [[ "$current_hdmi_state" == "$STATE_HDMI_CONN" ]]; then
     if [[ "${USM_MODE:-$CONF_MODE_SINGLE}" == "$CONF_MODE_SINGLE" ]]; then
@@ -1552,6 +1571,12 @@ update_display_by_hdmi_state() {
     else
       target_screen_mode="$MODE_DUAL"
     fi
+  fi
+
+  # Stop if state has not changed and display matches target mode
+  if [[ "$current_hdmi_state" == "$LAST_STATE" ]] \
+    && is_state_matching "$target_screen_mode"; then
+    return 0
   fi
 
   # Check screen mode at startup
@@ -1648,7 +1673,14 @@ handle_event_resume() {
 #
 # Globals:
 #   DEBOUNCE_SEC
+#   DSI_POLL_INTERVAL_SEC
+#   DSI_POLL_MAX_ATTEMPTS
+#   DSI_POLL_TIMEOUT_SEC
+#   LAST_EVENT_TIME
 #   LAST_STATE
+#   SCREEN_OUT_INT
+#   STATE_HDMI_DISC
+#   USM_RUN_DIR
 # Arguments:
 #   None
 # Outputs:
@@ -1662,6 +1694,39 @@ handle_event_udev() {
     return 0
   fi
 
+  local current_state
+  current_state=$(check_hdmi_state)
+
+  # Handle HDMI disconnect (unplug):
+  # Poll Wayland for internal display (DSI) to appear, then switch immediately.
+  if [[ "$current_state" == "$STATE_HDMI_DISC" ]]; then
+    log "HDMI unplug detected. Polling Wayland for $SCREEN_OUT_INT..."
+    local attempt=0
+    local dsi_ready=false
+
+    while (( attempt < DSI_POLL_MAX_ATTEMPTS )); do
+      if wlr-randr 2>/dev/null | grep -q "^$SCREEN_OUT_INT"; then
+        dsi_ready=true
+        log "$SCREEN_OUT_INT detected on attempt $((attempt + 1))."
+        break
+      fi
+      sleep "$DSI_POLL_INTERVAL_SEC"
+      ((attempt++))
+    done
+
+    if [[ "$dsi_ready" != "true" ]]; then
+      local warn_msg="Warning: $SCREEN_OUT_INT not found after "
+      warn_msg+="${DSI_POLL_TIMEOUT_SEC}s timeout. Proceeding with switch..."
+      log "$warn_msg"
+    fi
+
+    LAST_EVENT_TIME=$(date +%s)
+    update_display_by_hdmi_state
+    return 0
+  fi
+
+  # Handle HDMI connect (plug-in):
+  # Debounce to allow EDID handshake and modes to stabilize.
   local current_time
   current_time=$(date +%s)
   local diff=$((current_time - LAST_EVENT_TIME))
@@ -1671,10 +1736,9 @@ handle_event_udev() {
     return 0
   fi
 
-  log "Hardware change detected. Initiating ${DEBOUNCE_SEC}s debounce..."
+  log "HDMI plug-in detected. Initiating ${DEBOUNCE_SEC}s debounce..."
   sleep "$DEBOUNCE_SEC"
 
-  local current_state
   current_state=$(check_hdmi_state)
   log "Debounce wait finished. Re-verified state: $current_state"
 
@@ -2545,7 +2609,7 @@ cmd_read_conf() {
 # ==============================================================================
 cleanup_on_exit() {
   # Prevent duplicate execution during exit traps
-  [[ -n "$_CLEANUP_DONE" ]] && return
+  [[ -n "${_CLEANUP_DONE:-}" ]] && return
   _CLEANUP_DONE=1
 
   log "Monitor daemon terminating. Running cleanup..."
