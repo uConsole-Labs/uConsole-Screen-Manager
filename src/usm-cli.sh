@@ -987,13 +987,6 @@ exec_wlr_randr() {
 
   log "Detected outputs: ${active_outputs[*]}"
 
-  # Pre-cleanup: Gracefully disable placeholder output (NOOP) if present
-  # to prevent coordinate overlap conflicts.
-  if [[ -n "$noop_output" ]]; then
-    log "Pre-cleanup: Disabling placeholder output $noop_output..."
-    wlr-randr --output "$noop_output" --off >/dev/null 2>&1 || true
-  fi
-
   _build_wlr_internal_cmd "$int_enabled" "$has_int" full_cmd
   _build_wlr_external_cmd "$ext_enabled" "$has_ext" "$ext_mode" full_cmd
 
@@ -1006,6 +999,18 @@ exec_wlr_randr() {
     err_msg+="not detected. Aborting to prevent blackout."
     log "$err_msg"
     return 1
+  fi
+
+  if (( ${#full_cmd[@]} == 1 )); then
+    log "Error: No target outputs configured. Aborting."
+    return 1
+  fi
+
+  # Pre-cleanup: Gracefully disable placeholder output (NOOP) if present
+  # to prevent coordinate overlap conflicts.
+  if [[ -n "$noop_output" ]]; then
+    log "Pre-cleanup: Disabling placeholder output $noop_output..."
+    wlr-randr --output "$noop_output" --off >/dev/null 2>&1 || true
   fi
 
   log "Final command: ${full_cmd[*]}"
@@ -1826,6 +1831,20 @@ cmd_screen_int() {
 
   usm_hw_screen_on "DSI"
 
+  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" == "true" ]] && \
+     ! usm_is_screen_detected "$SCREEN_OUT_INT"; then
+    log "Waiting for $SCREEN_OUT_INT to appear in wlr-randr..."
+    local attempt=0
+    while (( attempt < DSI_POLL_MAX_ATTEMPTS )); do
+      if usm_is_screen_detected "$SCREEN_OUT_INT"; then
+        log "$SCREEN_OUT_INT detected on attempt $((attempt + 1))."
+        break
+      fi
+      sleep "$DSI_POLL_INTERVAL_SEC"
+      attempt=$((attempt + 1))
+    done
+  fi
+
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
     "$SCREEN_ENABLED_NO" \
@@ -2127,6 +2146,12 @@ cmd_screen_reset() {
 cmd_screen_on() {
   log "Starting cmd_screen_on."
 
+  auto_update_wayland_display
+  if ! wlr-randr >/dev/null 2>&1; then
+    log "Error: wlr-randr failed to connect to Wayland compositor."
+    return 1
+  fi
+
   local cur_mode
   cur_mode=$(usm_get_current_usm_mode)
 
@@ -2164,8 +2189,9 @@ cmd_screen_on() {
     cmd_screen_int
     return "$?"
   else
-    log "Error: No screens detected by wlr-randr."
-    return 1
+    log "No active outputs in wlr-randr. Attempting internal screen recovery."
+    cmd_screen_int
+    return "$?"
   fi
 }
 
