@@ -71,7 +71,6 @@ readonly PROFILE_IDX_ON=1
 LAST_STATE="unknown"
 USM_VERSION="unknown"
 START_TIME_YYMMDD=$(date +%y%m%d)
-LAST_EVENT_TIME=0
 
 if [[ -f "$VER_FILE" ]]; then
   USM_VERSION=$(cat "$VER_FILE")
@@ -1199,8 +1198,12 @@ stop_swayidle() {
 try_systemd_run() {
   local swayidle_cmd="$1"
   command -v systemd-run >/dev/null 2>&1 || return 1
+  local systemd_args=(--user)
+  if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+    systemd_args+=(--setenv="WAYLAND_DISPLAY=$WAYLAND_DISPLAY")
+  fi
   timeout "$SYSTEMD_RUN_TIMEOUT_SEC" systemd-run \
-    --user bash -c "$swayidle_cmd" 2>/dev/null
+    "${systemd_args[@]}" bash -c "$swayidle_cmd" 2>/dev/null
 }
 
 # ==============================================================================
@@ -1234,6 +1237,9 @@ start_swayidle() {
   swayidle_cmd=$(
     sed -n '/^[ \t]*swayidle/{:a; /\\$/{N; s/\\\n/ /; ba}; p; q}' \
       "$autostart_file"
+  )
+  swayidle_cmd=$(
+    printf '%s' "$swayidle_cmd" | sed 's/[[:space:]]*&[[:space:]]*$//'
   )
   if [[ -z "$swayidle_cmd" ]]; then
     log "No swayidle command found in $autostart_file"
@@ -1676,7 +1682,6 @@ handle_event_resume() {
 #   DSI_POLL_INTERVAL_SEC
 #   DSI_POLL_MAX_ATTEMPTS
 #   DSI_POLL_TIMEOUT_SEC
-#   LAST_EVENT_TIME
 #   LAST_STATE
 #   SCREEN_OUT_INT
 #   STATE_HDMI_DISC
@@ -1696,6 +1701,11 @@ handle_event_udev() {
 
   local current_state
   current_state=$(check_hdmi_state)
+
+  if [[ "$current_state" == "$LAST_STATE" ]]; then
+    log "DRM change event: state unchanged ($current_state). Ignored."
+    return 0
+  fi
 
   # Handle HDMI disconnect (unplug):
   # Poll Wayland for internal display (DSI) to appear, then switch immediately.
@@ -1720,22 +1730,12 @@ handle_event_udev() {
       log "$warn_msg"
     fi
 
-    LAST_EVENT_TIME=$(date +%s)
     update_display_by_hdmi_state
     return 0
   fi
 
   # Handle HDMI connect (plug-in):
   # Debounce to allow EDID handshake and modes to stabilize.
-  local current_time
-  current_time=$(date +%s)
-  local diff=$((current_time - LAST_EVENT_TIME))
-
-  if (( diff < DEBOUNCE_SEC )); then
-    log "Event debounced (only ${diff}s since last event)."
-    return 0
-  fi
-
   log "HDMI plug-in detected. Initiating ${DEBOUNCE_SEC}s debounce..."
   sleep "$DEBOUNCE_SEC"
 
@@ -1743,7 +1743,6 @@ handle_event_udev() {
   log "Debounce wait finished. Re-verified state: $current_state"
 
   if [[ "$current_state" != "$LAST_STATE" ]]; then
-    LAST_EVENT_TIME=$(date +%s)
     update_display_by_hdmi_state
   else
     log "State unchanged after debounce. Ignored."
@@ -2499,7 +2498,6 @@ cmd_monitor() {
 
   setup_runtime_dir
   rm -f "$USM_RUN_DIR/usm_suspending.lock"
-  LAST_EVENT_TIME=0
 
   FIFO_PATH="$USM_RUN_DIR/monitor_$$.fifo"
   rm -f "$FIFO_PATH" 2>/dev/null
@@ -2614,15 +2612,15 @@ cleanup_on_exit() {
 
   log "Monitor daemon terminating. Running cleanup..."
   run_hook "$HOOK_USM_STOP"
-  rm -f "$USM_RUN_DIR/usm_suspending.lock"
+  [[ -z "${USM_RUN_DIR:-}" ]] || rm -f "$USM_RUN_DIR/usm_suspending.lock"
 
-  [[ -n "$DBUS_PID" ]] && kill "$DBUS_PID" 2>/dev/null
-  [[ -n "$UDEV_PID" ]] && kill "$UDEV_PID" 2>/dev/null
-  rm -f "$FIFO_PATH" 2>/dev/null
+  [[ -z "${DBUS_PID:-}" ]] || kill "$DBUS_PID" 2>/dev/null || true
+  [[ -z "${UDEV_PID:-}" ]] || kill "$UDEV_PID" 2>/dev/null || true
+  [[ -z "${FIFO_PATH:-}" ]] || rm -f "$FIFO_PATH" 2>/dev/null || true
 
   if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" == "true" ]]; then
     local sys_state
-    sys_state=$(systemctl is-system-running 2>/dev/null)
+    sys_state=$(systemctl is-system-running 2>/dev/null || true)
     local is_valid_state=false
 
     for state in "${VALID_SYSTEM_STATES[@]}"; do
