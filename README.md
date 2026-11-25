@@ -43,8 +43,8 @@ Type `usm` in your terminal to see all available commands:
 * `usm screen-dual` : Switch output to both displays.
 * `usm screen-on`   : Turn on screens based on detected hardware and mode.
 * `usm screen-off`  : Turn off all screens.
-* `usm idle-off`    : Silently turn off internal screen on idle (for swayidle).
-* `usm idle-on`     : Silently wake internal screen if slept by `idle-off`.
+* `usm idle-off`    : Silently sleep active screen(s) on idle (for swayidle).
+* `usm idle-on`     : Silently wake screen(s) if slept by `idle-off`.
 * `usm start/stop`  : Control the USM background service.
 * `usm restart`     : Restart the USM background service.
 * `usm notify-test` : Test desktop notifications (requires mako).
@@ -74,9 +74,11 @@ The config file is located at `~/.config/usm/usm.conf`:
 * `USM_HDMI_DRM_FORCE_OFF`: Set `"true"` to force DRM 'off' for HDMI, which
   disables Hot Plug Detect (default: `"false"`).
 * `USM_HDMI_DISABLE_SWAYIDLE`: Set `"true"` to kill swayidle on HDMI connect
-  (default: `"false"`, as `idle-off`/`idle-on` is HDMI-aware).
+  (default: `"false"`; set `"true"` if your monitor drops HPD on DPMS).
 * `USM_IDLE_SCREENSAVER_TIMEOUT` / `USM_IDLE_SCREENSAVER_CMD`: Stage 1 idle
   timeout (seconds, `"0"` disables) and custom screensaver command.
+* `USM_IDLE_SCREENSAVER_STOP_CMD`: Optional command to stop Stage 1
+  screensaver before Stage 2 screen off (empty disables; non-blocking).
 * `USM_IDLE_SCREEN_OFF_TIMEOUT` / `USM_IDLE_SCREEN_OFF_CMD`: Stage 2 idle
   timeout (default: `"600"`) and command (empty defaults to `idle-off`).
 * `USM_IDLE_SCREEN_ON_CMD`: Stage 3 resume command (empty defaults to
@@ -201,8 +203,8 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 * `usm screen-dual` : 強制切換至「雙螢幕」同時輸出。
 * `usm screen-on`   : 根據偵測到的硬體與設定模式開啟螢幕。
 * `usm screen-off`  : 關閉所有螢幕。
-* `usm idle-off`    : 閒置時靜默關閉內建螢幕（供 swayidle 使用）。
-* `usm idle-on`     : 僅在由 `idle-off` 休眠時靜默喚醒內建螢幕。
+* `usm idle-off`    : 閒置時靜默休眠作用中螢幕（供 swayidle 使用）。
+* `usm idle-on`     : 僅在由 `idle-off` 休眠時靜默喚醒螢幕。
 * `usm start/stop`  : 啟動或停止 USM 背景服務。
 * `usm restart`     : 重新啟動 USM 背景服務。
 * `usm notify-test` : 測試桌面通知功能 (需安裝 mako)。
@@ -232,9 +234,11 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 * `USM_HDMI_DRM_FORCE_OFF`：設為 `"true"` 將強制關閉 HDMI DRM 狀態，這會
   導致喪失熱插拔偵測能力 (預設 `"false"`)。
 * `USM_HDMI_DISABLE_SWAYIDLE`：設為 `"true"` 時在連接 HDMI 會停用 swayidle
-  (預設 `"false"`，因 `idle-off`/`idle-on` 已具備 HDMI 感知保護)。
+  (預設 `"false"`；若外接螢幕進入 DPMS 會掉 HPD 可改設 `"true"`)。
 * `USM_IDLE_SCREENSAVER_TIMEOUT` / `USM_IDLE_SCREENSAVER_CMD`：階段 1 螢幕
   保護程式逾時（秒，`"0"` 為停用）與自訂指令。
+* `USM_IDLE_SCREENSAVER_STOP_CMD`：選用指令，於階段 2 熄屏前先結束階段 1
+  螢幕保護程式（留空為停用，失敗不阻斷熄屏）。
 * `USM_IDLE_SCREEN_OFF_TIMEOUT` / `USM_IDLE_SCREEN_OFF_CMD`：階段 2 關閉螢幕
   逾時（預設 `"600"`）與指令（留空預設 `idle-off`）。
 * `USM_IDLE_SCREEN_ON_CMD`：階段 3 喚醒指令（留空預設 `idle-on`）。`install.sh`

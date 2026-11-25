@@ -4,7 +4,7 @@
 set -euo pipefail
 
 # --- 1. General Config ---
-readonly CONF_FILE="$HOME/.config/usm/usm.conf"
+readonly CONF_FILE="${USM_CONF_FILE:-$HOME/.config/usm/usm.conf}"
 readonly DRM_PATH="/sys/class/drm"
 readonly LOG_PREFIX="[USM] CLI:"
 readonly SVC_NAME="usm.service"
@@ -158,8 +158,8 @@ show_usage() {
   printf "  screen-on    Turn on screens based on detected hardware and mode\n"
   printf "  screen-off   Turn off all screens\n"
   printf "  screen-switch Toggle screen state (on to off, off to on)\n"
-  printf "  idle-on      Wake internal screen if turned off by idle-off\n"
-  printf "  idle-off     Turn off internal screen on idle (silent)\n"
+  printf "  idle-on      Wake screen(s) if turned off by idle-off (silent)\n"
+  printf "  idle-off     Turn off active screen(s) on idle (silent)\n"
   printf "  screen-reset [%s] Reset DSI panel state via safe hotplug\n" \
          "$FLAG_SILENT"
   printf "  swayidle-enable  Enables swayidle by reading autostart config.\n"
@@ -198,7 +198,12 @@ set_sysfs_val() {
   local path="$1"
   local val="$2"
   if [[ -n "$path" && -n "$val" ]]; then
-    echo "$val" | sudo tee "$path" >/dev/null 2>/dev/null || true
+    local err_msg=""
+    if ! err_msg=$(echo "$val" | sudo tee "$path" 2>&1 >/dev/null); then
+      log "Warning: set_sysfs_val failed ($path=$val): $err_msg"
+    fi
+  else
+    log "Warning: set_sysfs_val skipped (empty path or val)."
   fi
 }
 
@@ -224,7 +229,7 @@ set_sysfs_val() {
 set_log_file_var() {
   USM_LOG_ENABLE="${USM_LOG_ENABLE:-true}"
   if [[ "$USM_LOG_ENABLE" == "true" ]]; then
-    LOG_DIR="$HOME/.local/state/usm/logs"
+    LOG_DIR="${USM_LOG_DIR:-$HOME/.local/state/usm/logs}"
     mkdir -p "$LOG_DIR"
     LOG_FILE="$LOG_DIR/usm_log_${START_TIME_YYMMDD}.log"
   else
@@ -336,7 +341,11 @@ update_conf() {
 #   0 on success.
 # ==============================================================================
 setup_runtime_dir() {
-  local dirs=(
+  local dirs=()
+  if [[ -n "${USM_RUN_DIR_OVERRIDE:-}" ]]; then
+    dirs+=("$USM_RUN_DIR_OVERRIDE")
+  fi
+  dirs+=(
     "${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/usm"
     "/tmp/usm_$(id -u)"
     "$HOME/.local/state/usm/run"
@@ -1018,13 +1027,15 @@ exec_wlr_randr() {
   log "Final command: ${full_cmd[*]}"
 
   local rc=0
-  "${full_cmd[@]}" || rc=$?
+  local wlr_out=""
+  wlr_out=$("${full_cmd[@]}" 2>&1) || rc=$?
 
   if [[ $rc -eq 0 ]]; then
     log "exec_wlr_randr succeeded."
     return 0
   else
     log "exec_wlr_randr failed. (exit code: $rc)"
+    [[ -n "$wlr_out" ]] && log "exec_wlr_randr output: $wlr_out"
     return 1
   fi
 }
@@ -1257,6 +1268,10 @@ cmd_start_swayidle() {
     local def_on="$HOME/.local/bin/usm-cli.sh idle-on"
     local off_cmd="${USM_IDLE_SCREEN_OFF_CMD:-$def_off}"
     local on_cmd="${USM_IDLE_SCREEN_ON_CMD:-$def_on}"
+    local stop_ss="${USM_IDLE_SCREENSAVER_STOP_CMD:-}"
+    if [[ -n "$stop_ss" ]]; then
+      off_cmd="($stop_ss) || true; $off_cmd"
+    fi
 
     if [[ "$ss_to" =~ ^[1-9][0-9]*$ ]] && \
        [[ -n "${USM_IDLE_SCREENSAVER_CMD:-}" ]]; then
@@ -1678,6 +1693,7 @@ update_display_by_hdmi_state() {
       return 0
     fi
     log "$target_cmd returned 0"
+    [[ -z "${USM_RUN_DIR:-}" ]] || rm -f "$USM_RUN_DIR/idle_off.lock"
     run_hook "$hook_name"
   fi
 
@@ -1725,6 +1741,10 @@ handle_event_resume() {
   log "System has resumed (PrepareForSleep: false)"
   rm -f "$USM_RUN_DIR/usm_suspending.lock"
   sleep 3
+  if [[ -n "${USM_RUN_DIR:-}" && -f "$USM_RUN_DIR/idle_off.lock" ]]; then
+    _usm_wake_hdmi_dpms
+    rm -f "$USM_RUN_DIR/idle_off.lock"
+  fi
   log "Re-evaluating display state after resume"
   update_display_by_hdmi_state
 }
@@ -1780,7 +1800,7 @@ handle_event_udev() {
         break
       fi
       sleep "$DSI_POLL_INTERVAL_SEC"
-      ((attempt++))
+      attempt=$((attempt + 1))
     done
 
     if [[ "$dsi_ready" != "true" ]]; then
@@ -1889,14 +1909,19 @@ cmd_screen_int() {
      ! usm_is_screen_detected "$SCREEN_OUT_INT"; then
     log "Waiting for $SCREEN_OUT_INT to appear in wlr-randr..."
     local attempt=0
+    local dsi_detected=false
     while (( attempt < DSI_POLL_MAX_ATTEMPTS )); do
       if usm_is_screen_detected "$SCREEN_OUT_INT"; then
         log "$SCREEN_OUT_INT detected on attempt $((attempt + 1))."
+        dsi_detected=true
         break
       fi
       sleep "$DSI_POLL_INTERVAL_SEC"
       attempt=$((attempt + 1))
     done
+    if [[ "$dsi_detected" != "true" ]]; then
+      log "Warning: $SCREEN_OUT_INT not detected within poll timeout."
+    fi
   fi
 
   exec_wlr_randr \
@@ -1977,6 +2002,7 @@ cmd_screen_ext() {
 
   if [[ $ret -eq 0 ]]; then
     usm_hw_screen_off "DSI"
+    _usm_wake_hdmi_dpms
     notify_user "External Screen Enabled"
     log "Successfully set to external screen."
     return 0
@@ -2039,6 +2065,7 @@ cmd_screen_dual() {
   log "Second exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
+    _usm_wake_hdmi_dpms
     notify_user "Dual Screen Enabled"
     log "Successfully set to dual screen."
     return 0
@@ -2224,6 +2251,7 @@ cmd_screen_on() {
     if [[ "${USM_MODE:-$CONF_MODE_SINGLE}" == "$CONF_MODE_SINGLE" ]]; then
       if [[ "$cur_mode" == "$MODE_EXT" && \
             $ext_on -eq 0 && $int_on -eq 1 ]]; then
+        _usm_wake_hdmi_dpms
         log "Screen state already matches expected (ext only). Skip."
         return 0
       fi
@@ -2233,6 +2261,7 @@ cmd_screen_on() {
     else
       if [[ "$cur_mode" == "$MODE_DUAL" && \
             $ext_on -eq 0 && $int_on -eq 0 ]]; then
+        _usm_wake_hdmi_dpms
         log "Screen state already matches expected (dual). Skip."
         return 0
       fi
@@ -2256,41 +2285,103 @@ cmd_screen_on() {
 }
 
 # ==============================================================================
+# _usm_wake_hdmi_dpms
+#
+# Wakes the external HDMI output from Wayland DPMS standby using targeted
+# wlopm (never wildcard '*'). Safe under set -e if wlopm or HDMI is absent.
+#
+# Returns:
+#   Always 0.
+# ==============================================================================
+_usm_wake_hdmi_dpms() {
+  if ! command -v wlopm >/dev/null 2>&1; then
+    log "Warning: wlopm not found; cannot wake $SCREEN_OUT_EXT via DPMS."
+    return 0
+  fi
+  if usm_is_screen_detected "$SCREEN_OUT_EXT"; then
+    local err_msg=""
+    if ! err_msg=$(wlopm --on "$SCREEN_OUT_EXT" 2>&1); then
+      log "Warning: wlopm --on $SCREEN_OUT_EXT failed: $err_msg"
+    fi
+  else
+    log "Info: $SCREEN_OUT_EXT not detected; skipping wlopm --on."
+  fi
+  return 0
+}
+
+# ==============================================================================
 # cmd_idle_off
 #
-# Silently turns off the internal screen on swayidle timeout if HDMI is not
-# active, and records idle_off.lock so idle-on only wakes idle-slept screens.
+# Silently turns off active screen(s) on swayidle timeout: external HDMI via
+# targeted wlopm DPMS and/or internal DSI via wlr-randr + hardware power off.
+# Persists target state (ext/int/dual) in idle_off.lock.
 #
 # Returns:
 #   0 on success or skip, 1 if Wayland compositor is unreachable.
 # ==============================================================================
 cmd_idle_off() {
+  log "Starting cmd_idle_off."
+  setup_runtime_dir
+  if [[ -f "$USM_RUN_DIR/idle_off.lock" ]]; then
+    log "Idle-off skipped: idle_off.lock already active."
+    return 0
+  fi
+
   auto_update_wayland_display
   if ! wlr-randr >/dev/null 2>&1; then
     log "Error: wlr-randr failed to connect to Wayland compositor."
     return 1
   fi
 
+  local ext_off=1
+  local int_off=1
+
   if usm_is_screen_on "$SCREEN_OUT_EXT"; then
-    return 0
+    if command -v wlopm >/dev/null 2>&1; then
+      log "Idle-off: turning off external screen ($SCREEN_OUT_EXT) via wlopm."
+      local err_msg=""
+      if err_msg=$(wlopm --off "$SCREEN_OUT_EXT" 2>&1); then
+        ext_off=0
+      else
+        log "Warning: wlopm --off $SCREEN_OUT_EXT failed: $err_msg"
+      fi
+    else
+      log "Warning: wlopm not found; skipping external screen idle-off."
+    fi
   fi
-  if ! usm_is_screen_on "$SCREEN_OUT_INT"; then
+
+  if usm_is_screen_on "$SCREEN_OUT_INT"; then
+    log "Idle-off: turning off internal screen ($SCREEN_OUT_INT)."
+    if exec_wlr_randr "$SCREEN_ENABLED_NO" "$SCREEN_ENABLED_SKIP" \
+         "$SCREEN_RES_1024_768"; then
+      usm_hw_screen_off "DSI"
+      int_off=0
+    else
+      log "Warning: Idle-off failed to disable $SCREEN_OUT_INT."
+    fi
+  fi
+
+  local idle_state=""
+  if [[ $ext_off -eq 0 && $int_off -eq 0 ]]; then
+    idle_state="$MODE_DUAL"
+  elif [[ $ext_off -eq 0 ]]; then
+    idle_state="$MODE_EXT"
+  elif [[ $int_off -eq 0 ]]; then
+    idle_state="$MODE_INT"
+  else
+    log "Idle-off skipped: no active screens turned off."
     return 0
   fi
 
-  if exec_wlr_randr "$SCREEN_ENABLED_NO" "$SCREEN_ENABLED_SKIP" \
-       "$SCREEN_RES_1024_768"; then
-    usm_hw_screen_off "DSI"
-    setup_runtime_dir
-    touch "$USM_RUN_DIR/idle_off.lock"
-  fi
+  printf "%s\n" "$idle_state" > "$USM_RUN_DIR/idle_off.lock"
+  log "Idle-off completed (state: $idle_state)."
 }
 
 # ==============================================================================
 # cmd_idle_on
 #
-# Silently wakes the internal screen on swayidle resume only if idle_off.lock
-# exists and HDMI is not active in single mode.
+# Silently wakes screen(s) on swayidle resume based on idle_off.lock state
+# (ext/int/dual). Never wakes DSI-2 when HDMI is active in single mode.
 #
 # Returns:
 #   0 on success or skip, 1 if Wayland compositor is unreachable.
@@ -2298,44 +2389,70 @@ cmd_idle_off() {
 cmd_idle_on() {
   setup_runtime_dir
   if [[ ! -f "$USM_RUN_DIR/idle_off.lock" ]]; then
+    log "Idle-on skipped: idle_off.lock not found."
     return 0
   fi
-  rm -f "$USM_RUN_DIR/idle_off.lock"
+
+  local idle_state
+  idle_state=$(cat "$USM_RUN_DIR/idle_off.lock" 2>/dev/null || true)
+  [[ -z "$idle_state" ]] && idle_state="$MODE_INT"
+  log "Starting cmd_idle_on (saved state: $idle_state)."
 
   auto_update_wayland_display
   if ! wlr-randr >/dev/null 2>&1; then
     log "Error: wlr-randr failed to connect to Wayland compositor."
     return 1
   fi
+  rm -f "$USM_RUN_DIR/idle_off.lock"
 
-  if usm_is_screen_detected "$SCREEN_OUT_EXT" && \
-     [[ "${USM_MODE:-$CONF_MODE_SINGLE}" == "$CONF_MODE_SINGLE" ]]; then
-    return 0
-  fi
-  if usm_is_screen_on "$SCREEN_OUT_INT"; then
-    return 0
+  if [[ "$idle_state" == "$MODE_EXT" || "$idle_state" == "$MODE_DUAL" ]]; then
+    log "Idle-on: waking external screen ($SCREEN_OUT_EXT) via wlopm."
+    _usm_wake_hdmi_dpms
   fi
 
-  usm_hw_screen_on "DSI"
-  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" == "true" ]] && \
-     ! usm_is_screen_detected "$SCREEN_OUT_INT"; then
-    local attempt=0
-    while (( attempt < DSI_POLL_MAX_ATTEMPTS )); do
-      usm_is_screen_detected "$SCREEN_OUT_INT" && break
-      sleep "$DSI_POLL_INTERVAL_SEC"
-      attempt=$((attempt + 1))
-    done
+  if [[ "$idle_state" == "$MODE_INT" || "$idle_state" == "$MODE_DUAL" ]]; then
+    if usm_is_screen_detected "$SCREEN_OUT_EXT" && \
+       [[ "${USM_MODE:-$CONF_MODE_SINGLE}" == "$CONF_MODE_SINGLE" ]]; then
+      log "Idle-on: HDMI active in single mode; skipping DSI wake."
+    elif ! usm_is_screen_on "$SCREEN_OUT_INT"; then
+      log "Idle-on: waking internal screen ($SCREEN_OUT_INT)."
+      usm_hw_screen_on "DSI"
+      if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" == "true" ]] && \
+         ! usm_is_screen_detected "$SCREEN_OUT_INT"; then
+        local attempt=0
+        local dsi_detected=false
+        while (( attempt < DSI_POLL_MAX_ATTEMPTS )); do
+          if usm_is_screen_detected "$SCREEN_OUT_INT"; then
+            dsi_detected=true
+            break
+          fi
+          sleep "$DSI_POLL_INTERVAL_SEC"
+          attempt=$((attempt + 1))
+        done
+        if [[ "$dsi_detected" != "true" ]]; then
+          log "Warning: Idle-on $SCREEN_OUT_INT poll timed out."
+        fi
+      fi
+      if ! exec_wlr_randr "$SCREEN_ENABLED_YES" "$SCREEN_ENABLED_SKIP" \
+             "$SCREEN_RES_1024_768"; then
+        log "Error: Idle-on failed to enable $SCREEN_OUT_INT."
+        return 1
+      fi
+    else
+      log "Idle-on: $SCREEN_OUT_INT is already on."
+    fi
   fi
-  exec_wlr_randr "$SCREEN_ENABLED_YES" "$SCREEN_ENABLED_SKIP" \
-    "$SCREEN_RES_1024_768"
+
+  log "Idle-on completed."
 }
 
 # ==============================================================================
 # cmd_screen_switch
 #
-# Toggles the screen state. If the external screen is on, the action is
-# disabled. Otherwise, if the internal screen is on, it calls cmd_screen_off;
-# if it is off, it calls cmd_screen_on.
+# Toggles the screen state. If the screen is currently in idle-off state,
+# wakes it via cmd_idle_on (including external HDMI). Otherwise, if the
+# external screen is active, the action is disabled; if internal is on, calls
+# cmd_screen_off; if off, calls cmd_screen_on.
 #
 # Globals:
 #   SCREEN_OUT_EXT
@@ -2349,6 +2466,19 @@ cmd_idle_on() {
 # ==============================================================================
 cmd_screen_switch() {
   log "Starting cmd_screen_switch."
+
+  auto_update_wayland_display
+  if ! wlr-randr >/dev/null 2>&1; then
+    log "Error: wlr-randr failed to connect to Wayland compositor."
+    return 1
+  fi
+
+  setup_runtime_dir
+  if [[ -f "$USM_RUN_DIR/idle_off.lock" ]]; then
+    log "Screen is in idle-off state. Waking via cmd_idle_on."
+    cmd_idle_on
+    return "$?"
+  fi
 
   local ext_on=1
   usm_is_screen_on "$SCREEN_OUT_EXT" && ext_on=0
@@ -2653,12 +2783,11 @@ cmd_monitor() {
   log "Starting monitor daemon..."
   run_hook "$HOOK_USM_START"
   wait_for_compositor
+  setup_runtime_dir
+  rm -f "$USM_RUN_DIR/usm_suspending.lock"
   update_display_by_hdmi_state
 
   init_hdmi_audio_default_async &
-
-  setup_runtime_dir
-  rm -f "$USM_RUN_DIR/usm_suspending.lock"
 
   FIFO_PATH="$USM_RUN_DIR/monitor_$$.fifo"
   rm -f "$FIFO_PATH" 2>/dev/null
@@ -2690,7 +2819,11 @@ cmd_monitor() {
   fi
   DBUS_PID=$!
 
-  udevadm monitor --subsystem=drm > "$FIFO_PATH" 2>/dev/null &
+  if command -v stdbuf >/dev/null 2>&1; then
+    stdbuf -oL udevadm monitor --subsystem=drm > "$FIFO_PATH" 2>/dev/null &
+  else
+    udevadm monitor --subsystem=drm > "$FIFO_PATH" 2>/dev/null &
+  fi
   UDEV_PID=$!
 
   while read -r line; do

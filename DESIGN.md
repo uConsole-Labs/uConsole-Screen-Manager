@@ -201,10 +201,13 @@ the user's config directory.*
 ### Swayidle Lifecycle Management
 Swayidle logic adheres to the Single Responsibility Principle (SRP):
 *   **Dedicated Idle Control (`cmd_idle_off` / `cmd_idle_on`)**: Silently
-    powers off `DSI-2` (setting `bl_power=4` for UPM powersave integration)
-    only when HDMI is inactive, coordinating via `$USM_RUN_DIR/idle_off.lock`.
-    Manual `cmd_screen_off` / `cmd_screen_on` (including UPM Power Key
-    `screen-switch`) clear stale locks so manual overrides stay authoritative.
+    sleeps active outputs — external HDMI via targeted `wlopm --off`
+    (never wildcard `*`) and internal `DSI-2` via `wlr-randr` + `bl_power=4`
+    for UPM powersave — persisting `ext`/`int`/`dual` in
+    `$USM_RUN_DIR/idle_off.lock`. Hotplug, suspend/resume, and manual
+    `cmd_screen_on` / `cmd_screen_ext` / `cmd_screen_dual` sync DPMS via
+    `_usm_wake_hdmi_dpms` and clear stale locks; UPM Power Key
+    `cmd_screen_switch` wakes idle-slept screens via `cmd_idle_on`.
 *   **Managed Autostart Block & Config Builder**: `install.sh` wraps USM
     swayidle entries in `# === USM Swayidle Config Start/End ===` markers
     (backing up `wlopm` with `# [USM backup] `, leaving custom configs
@@ -390,10 +393,12 @@ USM 提供輕量級的 Hook 機制。使用者只需將 shell 腳本放置於
 
 ### Swayidle 生命週期管理
 Swayidle 邏輯嚴格遵循單一責任原則（SRP）：
-*   **專用閒置控制（`cmd_idle_off` / `cmd_idle_on`）**：僅在無外接 HDMI 時
-    靜默關閉 `DSI-2`（透過 `bl_power=4` 自動與 UPM 省電模式連動），並以
-    `$USM_RUN_DIR/idle_off.lock` 同步狀態；手動 `cmd_screen_off` /
-    `cmd_screen_on`（含 UPM Power Key `screen-switch`）皆會清除殘留鎖。
+*   **專用閒置控制（`cmd_idle_off` / `cmd_idle_on`）**：靜默休眠作用中螢幕
+    ——外接 HDMI 採具名 `wlopm --off`（嚴禁萬用字元 `*`），內建 `DSI-2` 採
+    `wlr-randr` + `bl_power=4` 連動 UPM 省電——並於
+    `$USM_RUN_DIR/idle_off.lock` 記錄 `ext`/`int`/`dual`。熱插拔、休眠喚醒
+    與手動切換皆透過 `_usm_wake_hdmi_dpms` 同步 DPMS 並清鎖；UPM Power Key
+    `cmd_screen_switch` 於閒置休眠中直接導向 `cmd_idle_on` 喚醒。
 *   **受管區塊與設定組裝**：`install.sh` 以 `# === USM Swayidle Config`
     `Start/End ===` 標記管理 `autostart`（自動以 `# [USM backup] ` 備份遷移
     `wlopm`、保留非 `wlopm` 自訂設定，反安裝時自動還原）。

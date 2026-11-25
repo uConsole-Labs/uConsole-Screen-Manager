@@ -7,7 +7,7 @@
 - **Core Philosophy**:
   1. **Pure Native Stack & Zero-Polling Efficiency**:
      - STRICTLY FORBIDDEN: Introducing external language runtimes (Python, Node.js, Go, Rust) or third-party package managers (`npm`, `pip`, `cargo`).
-     - Pure Native Standards: POSIX/Bash scripts (`set -euo pipefail`) interacting directly with Linux DRM sysfs, `udevadm`, `dbus-monitor`, Wayland (`wlr-randr`), PipeWire (`pw-cli`/`wpctl`), `systemd`, `swayidle`, and `mako`/`notify-send`.
+     - Pure Native Standards: POSIX/Bash scripts (`set -euo pipefail`) interacting directly with Linux DRM sysfs, `udevadm`, `dbus-monitor`, Wayland (`wlr-randr`, targeted `wlopm`), PipeWire (`pw-cli`/`wpctl`), `systemd`, `swayidle`, and `mako`/`notify-send`.
      - Event-Driven Architecture: Daemon monitoring MUST react to kernel/udev and logind D-Bus signals over a FIFO, never via background polling loops.
   2. **Dual-Sided UX Mandate**:
      - **User UX (Zero Burden & Hardware Safety)**: Seamless HDMI plug/unplug switching, safe DSI (`panel-cwu50`) hardware power sequencing, HDMI audio kernel-crash prevention, non-intrusive idle management, and full preservation of user-customized configurations.
@@ -18,7 +18,7 @@
 ## 2. Technology Stack & Zero-Dependency Boundaries
 - **Runtime**: GNU Bash (`#!/bin/bash`, `set -euo pipefail`) on Raspberry Pi OS Trixie (Wayland / `labwc`).
 - **Allowed System Primitives**:
-  - Wayland & Display: `wlr-randr`, `swayidle`, Linux DRM/backlight/framebuffer sysfs (`/sys/class/drm`, `/sys/class/backlight`, `/sys/class/graphics/fb0`, `/sys/bus/mipi-dsi/drivers/panel-cwu50`).
+  - Wayland & Display: `wlr-randr`, `wlopm` (strictly targeted to `$SCREEN_OUT_EXT` only; NEVER wildcard `*` and NEVER on `DSI-2`), `swayidle`, Linux DRM/backlight/framebuffer sysfs (`/sys/class/drm`, `/sys/class/backlight`, `/sys/class/graphics/fb0`, `/sys/bus/mipi-dsi/drivers/panel-cwu50`).
   - Events & Services: `udevadm`, `dbus-monitor`, `systemctl --user`, `systemd-run --user`, `journalctl`.
   - Audio & Notifications: `pw-cli`, `wpctl`, `mako`, `notify-send`.
   - Standard GNU coreutils / text utilities (`awk`, `sed`, `grep`, `find`, `mkfifo`, `mktemp`, `pgrep`, `pkill`, `timeout`).
@@ -82,7 +82,7 @@ Every AI agent writing or refactoring code for this project MUST strictly uphold
 6. **Swayidle Managed Block & UPM Power Key Compatibility**:
    - `install.sh` MUST wrap USM-managed `autostart` entries in `# === USM Swayidle Config Start ===` and `# === USM Swayidle Config End ===` markers and preserve original `wlopm` lines with `# [USM backup] ` so `usm-uninstall` can cleanly restore them.
    - `install.sh` and `usm-uninstall` MUST NEVER overwrite, duplicate, or restart custom non-`wlopm` user `swayidle` configurations.
-   - `cmd_idle_off()` and `cmd_idle_on()` MUST remain silent by default, coordinate via `"$USM_RUN_DIR/idle_off.lock"`, clear stale locks on manual `cmd_screen_off()` / `cmd_screen_on()` (including UPM Power Key `screen-switch`), and use `usm_hw_screen_off "DSI"` (`bl_power=4`) so UPM battery powersave triggers seamlessly without modifying UPM.
+   - `cmd_idle_off()` and `cmd_idle_on()` MUST remain silent by default, coordinate via `"$USM_RUN_DIR/idle_off.lock"` (storing `ext`/`int`/`dual`), use targeted `wlopm` for `$SCREEN_OUT_EXT` DPMS standby and `usm_hw_screen_off "DSI"` (`bl_power=4`) for internal UPM battery powersave, sync `_usm_wake_hdmi_dpms` on hotplug/resume/manual wake, and wake idle-slept screens (including HDMI) when UPM Power Key triggers `cmd_screen_switch()`.
    - `cmd_stop_swayidle()` and `cmd_start_swayidle()` MUST poll up to 1 second (`0.1s` intervals) to confirm process exit/startup and prevent restart race conditions.
 7. **Strict Bash Error Safety**:
    - All scripts MUST pass `bash -n` and `shellcheck` with zero errors and zero warnings under `set -euo pipefail`.
