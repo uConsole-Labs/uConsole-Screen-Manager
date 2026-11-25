@@ -158,6 +158,8 @@ show_usage() {
   printf "  screen-on    Turn on screens based on detected hardware and mode\n"
   printf "  screen-off   Turn off all screens\n"
   printf "  screen-switch Toggle screen state (on to off, off to on)\n"
+  printf "  idle-on      Wake internal screen if turned off by idle-off\n"
+  printf "  idle-off     Turn off internal screen on idle (silent)\n"
   printf "  screen-reset [%s] Reset DSI panel state via safe hotplug\n" \
          "$FLAG_SILENT"
   printf "  swayidle-enable  Enables swayidle by reading autostart config.\n"
@@ -1129,7 +1131,7 @@ auto_update_wayland_display() {
   if [[ "$count" -eq 1 ]]; then
     local socket_name
     socket_name=$(basename "${lock_files[0]%.lock}")
-    if [[ "$WAYLAND_DISPLAY" != "$socket_name" ]]; then
+    if [[ "${WAYLAND_DISPLAY:-}" != "$socket_name" ]]; then
       log "Single lock found. Trusting $socket_name."
       _apply_wayland_socket "$socket_name"
     fi
@@ -1138,7 +1140,7 @@ auto_update_wayland_display() {
 
   # Guard 3: Fast path cache validation
   log "Validating current cache: ${WAYLAND_DISPLAY:-<unset>}"
-  if [[ -n "$WAYLAND_DISPLAY" ]] && \
+  if [[ -n "${WAYLAND_DISPLAY:-}" ]] && \
      _test_wayland_socket "$WAYLAND_DISPLAY"; then
     log "Cache valid."
     return 0
@@ -1162,7 +1164,7 @@ auto_update_wayland_display() {
 }
 
 # ==============================================================================
-# stop_swayidle
+# cmd_stop_swayidle
 #
 # Terminates the swayidle process if it is currently running.
 #
@@ -1175,13 +1177,22 @@ auto_update_wayland_display() {
 # Returns:
 #   0 on success.
 # ==============================================================================
-stop_swayidle() {
+cmd_stop_swayidle() {
   if ! pgrep -x "swayidle" >/dev/null 2>&1; then
     log "swayidle not running"
     return 0
   fi
   pkill -x "swayidle" || true
-  log "swayidle killed"
+  local attempt=0
+  while (( attempt < 10 )); do
+    if ! pgrep -x "swayidle" >/dev/null 2>&1; then
+      log "swayidle killed"
+      return 0
+    fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  log "Warning: swayidle still running after 1s timeout."
 }
 
 # ==============================================================================
@@ -1212,7 +1223,7 @@ try_systemd_run() {
 }
 
 # ==============================================================================
-# start_swayidle
+# cmd_start_swayidle
 #
 # Starts the swayidle process by extracting its command from the autostart
 # configuration file, provided it is not already running.
@@ -1226,26 +1237,57 @@ try_systemd_run() {
 # Returns:
 #   0 on success.
 # ==============================================================================
-start_swayidle() {
+cmd_start_swayidle() {
   if pgrep -x "swayidle" >/dev/null 2>&1; then
     log "swayidle already running"
     return 0
   fi
 
-  local autostart_file="$HOME/.config/labwc/autostart"
-  if [[ ! -f "$autostart_file" ]]; then
-    log "Autostart file $autostart_file not found"
-    return 0
-  fi
+  auto_update_wayland_display
 
-  local swayidle_cmd
-  swayidle_cmd=$(
-    sed -n '/^[ \t]*swayidle/{:a; /\\$/{N; s/\\\n/ /; ba}; p; q}' \
-      "$autostart_file"
-  )
-  swayidle_cmd=$(
-    printf '%s' "$swayidle_cmd" | sed 's/[[:space:]]*&[[:space:]]*$//'
-  )
+  local autostart_file="$HOME/.config/labwc/autostart"
+  local swayidle_cmd=""
+
+  if [[ -f "$autostart_file" ]] && \
+     grep -qxF "# === USM Swayidle Config Start ===" "$autostart_file"; then
+    local args=(swayidle -w)
+    local ss_to="${USM_IDLE_SCREENSAVER_TIMEOUT:-0}"
+    local off_to="${USM_IDLE_SCREEN_OFF_TIMEOUT:-600}"
+    local def_off="$HOME/.local/bin/usm-cli.sh idle-off"
+    local def_on="$HOME/.local/bin/usm-cli.sh idle-on"
+    local off_cmd="${USM_IDLE_SCREEN_OFF_CMD:-$def_off}"
+    local on_cmd="${USM_IDLE_SCREEN_ON_CMD:-$def_on}"
+
+    if [[ "$ss_to" =~ ^[1-9][0-9]*$ ]] && \
+       [[ -n "${USM_IDLE_SCREENSAVER_CMD:-}" ]]; then
+      args+=(timeout "$ss_to" "$USM_IDLE_SCREENSAVER_CMD")
+      if ! [[ "$off_to" =~ ^[1-9][0-9]*$ ]] && \
+         [[ -n "${USM_IDLE_SCREEN_ON_CMD:-}" ]]; then
+        args+=(resume "$USM_IDLE_SCREEN_ON_CMD")
+      fi
+    fi
+    if [[ "$off_to" =~ ^[1-9][0-9]*$ ]]; then
+      args+=(timeout "$off_to" "$off_cmd" resume "$on_cmd")
+    fi
+    if (( ${#args[@]} == 2 )); then
+      log "All USM idle timeouts disabled. Skipping swayidle."
+      return 0
+    fi
+    printf -v swayidle_cmd '%q ' "${args[@]}"
+    swayidle_cmd="${swayidle_cmd% }"
+  else
+    if [[ ! -f "$autostart_file" ]]; then
+      log "Autostart file $autostart_file not found"
+      return 0
+    fi
+    swayidle_cmd=$(
+      sed -n '/^[ \t]*swayidle/{:a; /\\$/{N; s/\\\n/ /; ba}; p; q}' \
+        "$autostart_file"
+    )
+    swayidle_cmd=$(
+      printf '%s' "$swayidle_cmd" | sed 's/[[:space:]]*&[[:space:]]*$//'
+    )
+  fi
   if [[ -z "$swayidle_cmd" ]]; then
     log "No swayidle command found in $autostart_file"
     return 0
@@ -1256,6 +1298,18 @@ start_swayidle() {
     log "Warning: Falling back to nohup to start swayidle"
     nohup bash -c "$swayidle_cmd" >/dev/null 2>&1 &
   fi
+
+  local attempt=0
+  while (( attempt < 10 )); do
+    if pgrep -x "swayidle" >/dev/null 2>&1; then
+      log "swayidle started successfully"
+      return 0
+    fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  log "Error: swayidle failed to start within 1s timeout."
+  return 1
 }
 
 # ==============================================================================
@@ -1284,13 +1338,13 @@ manage_swayidle() {
 
   if [[ "$hdmi_state" == "$STATE_HDMI_CONN" ]]; then
     log "HDMI connected: stopping swayidle"
-    stop_swayidle
+    cmd_stop_swayidle
     return 0
   fi
 
   if [[ "$hdmi_state" == "$STATE_HDMI_DISC" ]]; then
     log "HDMI disconnected: starting swayidle"
-    start_swayidle
+    cmd_start_swayidle || true
     return 0
   fi
 }
@@ -2029,6 +2083,9 @@ cmd_screen_off() {
     return 1
   fi
 
+  setup_runtime_dir
+  rm -f "$USM_RUN_DIR/idle_off.lock"
+
   # Check internal screen state
   local int_on=1
   usm_is_screen_on "$SCREEN_OUT_INT" && int_on=0
@@ -2152,6 +2209,9 @@ cmd_screen_on() {
     return 1
   fi
 
+  setup_runtime_dir
+  rm -f "$USM_RUN_DIR/idle_off.lock"
+
   local cur_mode
   cur_mode=$(usm_get_current_usm_mode)
 
@@ -2193,6 +2253,81 @@ cmd_screen_on() {
     cmd_screen_int
     return "$?"
   fi
+}
+
+# ==============================================================================
+# cmd_idle_off
+#
+# Silently turns off the internal screen on swayidle timeout if HDMI is not
+# active, and records idle_off.lock so idle-on only wakes idle-slept screens.
+#
+# Returns:
+#   0 on success or skip, 1 if Wayland compositor is unreachable.
+# ==============================================================================
+cmd_idle_off() {
+  auto_update_wayland_display
+  if ! wlr-randr >/dev/null 2>&1; then
+    log "Error: wlr-randr failed to connect to Wayland compositor."
+    return 1
+  fi
+
+  if usm_is_screen_on "$SCREEN_OUT_EXT"; then
+    return 0
+  fi
+  if ! usm_is_screen_on "$SCREEN_OUT_INT"; then
+    return 0
+  fi
+
+  if exec_wlr_randr "$SCREEN_ENABLED_NO" "$SCREEN_ENABLED_SKIP" \
+       "$SCREEN_RES_1024_768"; then
+    usm_hw_screen_off "DSI"
+    setup_runtime_dir
+    touch "$USM_RUN_DIR/idle_off.lock"
+  fi
+}
+
+# ==============================================================================
+# cmd_idle_on
+#
+# Silently wakes the internal screen on swayidle resume only if idle_off.lock
+# exists and HDMI is not active in single mode.
+#
+# Returns:
+#   0 on success or skip, 1 if Wayland compositor is unreachable.
+# ==============================================================================
+cmd_idle_on() {
+  setup_runtime_dir
+  if [[ ! -f "$USM_RUN_DIR/idle_off.lock" ]]; then
+    return 0
+  fi
+  rm -f "$USM_RUN_DIR/idle_off.lock"
+
+  auto_update_wayland_display
+  if ! wlr-randr >/dev/null 2>&1; then
+    log "Error: wlr-randr failed to connect to Wayland compositor."
+    return 1
+  fi
+
+  if usm_is_screen_detected "$SCREEN_OUT_EXT" && \
+     [[ "${USM_MODE:-$CONF_MODE_SINGLE}" == "$CONF_MODE_SINGLE" ]]; then
+    return 0
+  fi
+  if usm_is_screen_on "$SCREEN_OUT_INT"; then
+    return 0
+  fi
+
+  usm_hw_screen_on "DSI"
+  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" == "true" ]] && \
+     ! usm_is_screen_detected "$SCREEN_OUT_INT"; then
+    local attempt=0
+    while (( attempt < DSI_POLL_MAX_ATTEMPTS )); do
+      usm_is_screen_detected "$SCREEN_OUT_INT" && break
+      sleep "$DSI_POLL_INTERVAL_SEC"
+      attempt=$((attempt + 1))
+    done
+  fi
+  exec_wlr_randr "$SCREEN_ENABLED_YES" "$SCREEN_ENABLED_SKIP" \
+    "$SCREEN_RES_1024_768"
 }
 
 # ==============================================================================
@@ -2658,7 +2793,7 @@ cleanup_on_exit() {
 
     if [[ "$is_valid_state" == "true" ]]; then
       log "Service exiting: restoring swayidle"
-      start_swayidle
+      cmd_start_swayidle || true
     else
       log "System state '$sys_state'. Skipping swayidle restore."
     fi
@@ -2692,9 +2827,11 @@ main() {
     screen-on)   cmd_screen_on ;;
     screen-off)  cmd_screen_off ;;
     screen-switch) cmd_screen_switch ;;
+    idle-on)     cmd_idle_on ;;
+    idle-off)    cmd_idle_off ;;
     screen-reset) cmd_screen_reset "${2:-}" ;;
-    swayidle-enable) start_swayidle ;;
-    swayidle-disable) stop_swayidle ;;
+    swayidle-enable) cmd_start_swayidle ;;
+    swayidle-disable) cmd_stop_swayidle ;;
     status)      cmd_status ;;
     start)       cmd_service "start" ;;
     stop)        cmd_service "stop" ;;

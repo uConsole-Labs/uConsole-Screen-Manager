@@ -19,6 +19,9 @@ readonly MAKO_DIR="$HOME/.config/mako"
 readonly MAKO_CONF="$MAKO_DIR/config"
 readonly LABWC_DIR="$HOME/.config/labwc"
 readonly LABWC_AUTO="$LABWC_DIR/autostart"
+readonly SWAYIDLE_MARK_START="# === USM Swayidle Config Start ==="
+readonly SWAYIDLE_MARK_END="# === USM Swayidle Config End ==="
+USM_SWAYIDLE_MANAGED="false"
 
 # ==============================================================================
 # log
@@ -62,6 +65,83 @@ install_mako() {
     else
       log "Warning: Notifications will not work without mako."
     fi
+  fi
+}
+
+# ==============================================================================
+# configure_swayidle_autostart
+#
+# Manages the USM swayidle block in labwc autostart without altering custom
+# non-wlopm swayidle configurations.
+#
+# Returns:
+#   0 on success.
+# ==============================================================================
+configure_swayidle_autostart() {
+  if ! command -v swayidle >/dev/null 2>&1; then
+    log "swayidle not found. Skipping swayidle configuration."
+    return 0
+  fi
+
+  if [[ -f "$LABWC_AUTO" ]] && \
+     grep -qxF "$SWAYIDLE_MARK_START" "$LABWC_AUTO"; then
+    if ! grep -qxF "$SWAYIDLE_MARK_END" "$LABWC_AUTO"; then
+      log "Warning: Malformed USM swayidle block (missing End). Skipping."
+      return 0
+    fi
+    log "USM swayidle config block already present in $LABWC_AUTO. Skipping."
+    USM_SWAYIDLE_MANAGED="true"
+    return 0
+  fi
+
+  local active_swayidle=""
+  if [[ -f "$LABWC_AUTO" ]]; then
+    active_swayidle=$(sed -n \
+      '/^[[:space:]]*swayidle/{:a;/\\[[:space:]]*$/{N;s/\\\n/ /;ba};p;q}' \
+      "$LABWC_AUTO")
+  fi
+
+  if [[ -z "$active_swayidle" ]]; then
+    log "No active swayidle found in $LABWC_AUTO."
+    log "Adding USM managed swayidle block..."
+    cat << EOF >> "$LABWC_AUTO"
+$SWAYIDLE_MARK_START
+# Managed by uConsole Screen Manager (USM). Do not modify this block manually.
+# Changes inside this block will be removed or overwritten by USM.
+$BIN_DIR/$FILE_CLI swayidle-enable
+$SWAYIDLE_MARK_END
+EOF
+    USM_SWAYIDLE_MANAGED="true"
+  elif [[ "$active_swayidle" == *"wlopm"* ]]; then
+    log "Detected wlopm in active swayidle config ($LABWC_AUTO)."
+    log "Wrapping old wlopm as backup and switching to USM managed block..."
+    local tmp_auto
+    tmp_auto=$(mktemp)
+    awk -v s="$SWAYIDLE_MARK_START" -v e="$SWAYIDLE_MARK_END" \
+        -v cmd="$BIN_DIR/$FILE_CLI swayidle-enable" '
+      BEGIN { in_block = 0; done = 0 }
+      !done && !in_block && /^[[:space:]]*swayidle/ {
+        in_block = 1
+        print s
+        print "# Managed by uConsole Screen Manager (USM). Do not modify."
+        print "# Changes inside this block will be removed/overwritten by USM."
+      }
+      in_block {
+        print "# [USM backup] " $0
+        if ($0 !~ /\\[[:space:]]*$/) {
+          print cmd
+          print e
+          in_block = 0
+          done = 1
+        }
+        next
+      }
+      { print }
+    ' "$LABWC_AUTO" > "$tmp_auto"
+    mv "$tmp_auto" "$LABWC_AUTO"
+    USM_SWAYIDLE_MANAGED="true"
+  else
+    log "Custom swayidle detected (no wlopm). Leaving $LABWC_AUTO untouched."
   fi
 }
 
@@ -124,6 +204,8 @@ EOF
 
     echo "systemctl --user restart $FILE_SVC" >> "$LABWC_AUTO"
   fi
+
+  configure_swayidle_autostart
 }
 
 # ==============================================================================
@@ -247,6 +329,43 @@ fi
 
 sed -i '/alias usm=/d' "\$HOME/.bashrc"
 sed -i "/restart $FILE_SVC/d" "\$HOME/.config/labwc/autostart" || true
+if [[ -f "\$HOME/.config/labwc/autostart" ]]; then
+  if grep -qxF "$SWAYIDLE_MARK_START" "\$HOME/.config/labwc/autostart"; then
+    if ! grep -qxF "$SWAYIDLE_MARK_END" "\$HOME/.config/labwc/autostart"; then
+      printf "%s Warning: Malformed USM swayidle block (no End). Skipped.\n" \
+        "\$LOG_PREFIX"
+    else
+      tmp_auto=\$(mktemp)
+      has_backup="false"
+      grep -q "^# \[USM backup\] " "\$HOME/.config/labwc/autostart" && \
+        has_backup="true"
+      awk -v s="$SWAYIDLE_MARK_START" -v e="$SWAYIDLE_MARK_END" '
+        BEGIN { in_block = 0 }
+        \$0 == s { in_block = 1; next }
+        \$0 == e { in_block = 0; next }
+        in_block {
+          if (index(\$0, "# [USM backup] ") == 1) {
+            print substr(\$0, 16)
+          }
+          next
+        }
+        { print }
+      ' "\$HOME/.config/labwc/autostart" > "\$tmp_auto"
+      mv "\$tmp_auto" "\$HOME/.config/labwc/autostart"
+      pkill -x "swayidle" 2>/dev/null || true
+      if [[ "\$has_backup" == "true" ]]; then
+        printf "%s Removed USM swayidle block and restored original config.\n" \
+          "\$LOG_PREFIX"
+      else
+        printf "%s Removed USM swayidle block from %s.\n" \
+          "\$LOG_PREFIX" "\$HOME/.config/labwc/autostart"
+      fi
+    fi
+  elif grep -q "^[[:space:]]*swayidle" "\$HOME/.config/labwc/autostart"; then
+    printf "%s Custom swayidle config in %s retained.\n" \
+      "\$LOG_PREFIX" "\$HOME/.config/labwc/autostart"
+  fi
+fi
 rm -f "\$HOME/.local/bin/$FILE_CLI"
 rm -f "\$HOME/.local/bin/$FILE_UNINST"
 
@@ -292,6 +411,17 @@ main() {
   if command -v mako >/dev/null 2>&1 && ! pgrep -x "mako" >/dev/null; then
     log "Starting mako daemon..."
     mako >/dev/null 2>&1 &
+  fi
+
+  if [[ "$USM_SWAYIDLE_MANAGED" == "true" ]]; then
+    if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+      log "Restarting swayidle to apply USM configuration..."
+      "$BIN_DIR/$FILE_CLI" swayidle-disable || true
+      "$BIN_DIR/$FILE_CLI" swayidle-enable || true
+    else
+      log "No active Wayland display in current shell."
+      log "New USM swayidle config will take effect on next login."
+    fi
   fi
 
   # Prompt to start the service immediately

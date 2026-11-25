@@ -43,13 +43,15 @@ Type `usm` in your terminal to see all available commands:
 * `usm screen-dual` : Switch output to both displays.
 * `usm screen-on`   : Turn on screens based on detected hardware and mode.
 * `usm screen-off`  : Turn off all screens.
+* `usm idle-off`    : Silently turn off internal screen on idle (for swayidle).
+* `usm idle-on`     : Silently wake internal screen if slept by `idle-off`.
 * `usm start/stop`  : Control the USM background service.
 * `usm restart`     : Restart the USM background service.
 * `usm notify-test` : Test desktop notifications (requires mako).
 * `usm hdmi-audio-on` : Enable HDMI audio devices.
 * `usm hdmi-audio-off`: Disable HDMI audio devices (prevents kernel crash).
-* `usm swayidle-enable` : Enable swayidle by reading autostart config.
-* `usm swayidle-disable` : Disable swayidle by terminating its process.
+* `usm swayidle-enable` : Start swayidle from `usm.conf` (or custom autostart).
+* `usm swayidle-disable` : Stop swayidle and confirm process exit.
 * `usm log-enable`    : Enable file logging.
 * `usm log-disable`   : Disable file logging.
 * `usm hdmi-audio-state`: Print current state of HDMI audio devices.
@@ -71,6 +73,16 @@ The config file is located at `~/.config/usm/usm.conf`:
   power control (default: `"true"`).
 * `USM_HDMI_DRM_FORCE_OFF`: Set `"true"` to force DRM 'off' for HDMI, which
   disables Hot Plug Detect (default: `"false"`).
+* `USM_HDMI_DISABLE_SWAYIDLE`: Set `"true"` to kill swayidle on HDMI connect
+  (default: `"false"`, as `idle-off`/`idle-on` is HDMI-aware).
+* `USM_IDLE_SCREENSAVER_TIMEOUT` / `USM_IDLE_SCREENSAVER_CMD`: Stage 1 idle
+  timeout (seconds, `"0"` disables) and custom screensaver command.
+* `USM_IDLE_SCREEN_OFF_TIMEOUT` / `USM_IDLE_SCREEN_OFF_CMD`: Stage 2 idle
+  timeout (default: `"600"`) and command (empty defaults to `idle-off`).
+* `USM_IDLE_SCREEN_ON_CMD`: Stage 3 resume command (empty defaults to
+  `idle-on`). Note: `install.sh` wraps USM swayidle entries in managed
+  markers, migrates `wlopm` with backup, preserves custom non-`wlopm`
+  swayidle configs, and restores backups on `usm-uninstall`.
 
 
 ## 🪝 Custom Hooks
@@ -189,13 +201,15 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 * `usm screen-dual` : 強制切換至「雙螢幕」同時輸出。
 * `usm screen-on`   : 根據偵測到的硬體與設定模式開啟螢幕。
 * `usm screen-off`  : 關閉所有螢幕。
+* `usm idle-off`    : 閒置時靜默關閉內建螢幕（供 swayidle 使用）。
+* `usm idle-on`     : 僅在由 `idle-off` 休眠時靜默喚醒內建螢幕。
 * `usm start/stop`  : 啟動或停止 USM 背景服務。
 * `usm restart`     : 重新啟動 USM 背景服務。
 * `usm notify-test` : 測試桌面通知功能 (需安裝 mako)。
 * `usm hdmi-audio-on` : 開啟 HDMI 音效輸出。
 * `usm hdmi-audio-off`: 關閉 HDMI 音效輸出 (能預防拔插當機 Bug)。
-* `usm swayidle-enable` : 從 autostart 設定讀取並啟用螢幕休眠管理。
-* `usm swayidle-disable`: 強制關閉螢幕休眠管理進程。
+* `usm swayidle-enable` : 依 `usm.conf`（或自訂 autostart）啟動 swayidle。
+* `usm swayidle-disable`: 終止 swayidle 並確認進程已退出。
 * `usm log-enable`    : 啟用日誌寫入功能。
 * `usm log-disable`   : 停用日誌寫入功能。
 * `usm hdmi-audio-state`: 顯示目前的 HDMI 音效狀態。
@@ -217,6 +231,15 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
   喚醒機制 (預設 `"true"`)。
 * `USM_HDMI_DRM_FORCE_OFF`：設為 `"true"` 將強制關閉 HDMI DRM 狀態，這會
   導致喪失熱插拔偵測能力 (預設 `"false"`)。
+* `USM_HDMI_DISABLE_SWAYIDLE`：設為 `"true"` 時在連接 HDMI 會停用 swayidle
+  (預設 `"false"`，因 `idle-off`/`idle-on` 已具備 HDMI 感知保護)。
+* `USM_IDLE_SCREENSAVER_TIMEOUT` / `USM_IDLE_SCREENSAVER_CMD`：階段 1 螢幕
+  保護程式逾時（秒，`"0"` 為停用）與自訂指令。
+* `USM_IDLE_SCREEN_OFF_TIMEOUT` / `USM_IDLE_SCREEN_OFF_CMD`：階段 2 關閉螢幕
+  逾時（預設 `"600"`）與指令（留空預設 `idle-off`）。
+* `USM_IDLE_SCREEN_ON_CMD`：階段 3 喚醒指令（留空預設 `idle-on`）。`install.sh`
+  會以受管區塊標記管理 `autostart`，自動備份遷移 `wlopm`、保留非 `wlopm` 的
+  使用者自訂設定，並於 `usm-uninstall` 時自動還原備份。
 
 
 ## 🪝 自定義腳本 (Custom Hooks)

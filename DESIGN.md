@@ -200,10 +200,21 @@ the user's config directory.*
 
 ### Swayidle Lifecycle Management
 Swayidle logic adheres to the Single Responsibility Principle (SRP):
-*   Hardware state transitions (Plug/Unplug) evaluate environment constraints
-    and call `start_swayidle` / `stop_swayidle`.
-*   Daemon termination cleanly delegates to `cleanup_on_exit`, running hooks
-    and resetting swayidle to the default background state.
+*   **Dedicated Idle Control (`cmd_idle_off` / `cmd_idle_on`)**: Silently
+    powers off `DSI-2` (setting `bl_power=4` for UPM powersave integration)
+    only when HDMI is inactive, coordinating via `$USM_RUN_DIR/idle_off.lock`.
+    Manual `cmd_screen_off` / `cmd_screen_on` (including UPM Power Key
+    `screen-switch`) clear stale locks so manual overrides stay authoritative.
+*   **Managed Autostart Block & Config Builder**: `install.sh` wraps USM
+    swayidle entries in `# === USM Swayidle Config Start/End ===` markers
+    (backing up `wlopm` with `# [USM backup] `, leaving custom configs
+    untouched, and restoring backups on `usm-uninstall`). `cmd_start_swayidle`
+    dynamically builds 3-stage `swayidle` args from `usm.conf` and both
+    `cmd_start_swayidle` / `cmd_stop_swayidle` poll up to 1s to prevent
+    restart race conditions.
+*   **Hardware & Exit Transitions**: `manage_swayidle` and `cleanup_on_exit`
+    delegate to `cmd_start_swayidle` / `cmd_stop_swayidle` when
+    `USM_HDMI_DISABLE_SWAYIDLE="true"`.
 
 # 系統架構與設計文件 (Traditional Chinese)
 
@@ -379,7 +390,15 @@ USM 提供輕量級的 Hook 機制。使用者只需將 shell 腳本放置於
 
 ### Swayidle 生命週期管理
 Swayidle 邏輯嚴格遵循單一責任原則（SRP）：
-*   **硬體狀態轉換**（插入/拔除）負責評估環境限制，並呼叫 `start_swayidle`
-    或 `stop_swayidle`。
-*   **服務終止**則將清理工作乾淨俐落地委派給 `cleanup_on_exit`，在執行停止
-    Hooks 後，將 Swayidle 還原至預設的背景狀態。
+*   **專用閒置控制（`cmd_idle_off` / `cmd_idle_on`）**：僅在無外接 HDMI 時
+    靜默關閉 `DSI-2`（透過 `bl_power=4` 自動與 UPM 省電模式連動），並以
+    `$USM_RUN_DIR/idle_off.lock` 同步狀態；手動 `cmd_screen_off` /
+    `cmd_screen_on`（含 UPM Power Key `screen-switch`）皆會清除殘留鎖。
+*   **受管區塊與設定組裝**：`install.sh` 以 `# === USM Swayidle Config`
+    `Start/End ===` 標記管理 `autostart`（自動以 `# [USM backup] ` 備份遷移
+    `wlopm`、保留非 `wlopm` 自訂設定，反安裝時自動還原）。
+    `cmd_start_swayidle` 依 `usm.conf` 動態組裝三階段 `swayidle` 參數，且與
+    `cmd_stop_swayidle` 皆具備最多 1 秒輪詢防範重啟競爭。
+*   **硬體轉換與服務終止**：當 `USM_HDMI_DISABLE_SWAYIDLE="true"` 時，
+    `manage_swayidle` 與 `cleanup_on_exit` 委派給 `cmd_start_swayidle` 與
+    `cmd_stop_swayidle`。
