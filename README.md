@@ -43,6 +43,7 @@ Type `usm` in your terminal to see all available commands:
 * `usm screen-dual` : Switch output to both displays.
 * `usm screen-on`   : Turn on screens based on detected hardware and mode.
 * `usm screen-off`  : Turn off all screens.
+* `usm screen-switch`: Toggle active screen(s) off/on (UPM Power Key).
 * `usm idle-off`    : Silently sleep active screen(s) on idle (for swayidle).
 * `usm idle-on`     : Silently wake screen(s) if slept by `idle-off`.
 * `usm start/stop`  : Control the USM background service.
@@ -206,6 +207,7 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 * `usm screen-dual` : 強制切換至「雙螢幕」同時輸出。
 * `usm screen-on`   : 根據偵測到的硬體與設定模式開啟螢幕。
 * `usm screen-off`  : 關閉所有螢幕。
+* `usm screen-switch`: 切換作用中螢幕開關（供 UPM 電源鍵使用）。
 * `usm idle-off`    : 閒置時靜默休眠作用中螢幕（供 swayidle 使用）。
 * `usm idle-on`     : 僅在由 `idle-off` 休眠時靜默喚醒螢幕。
 * `usm start/stop`  : 啟動或停止 USM 背景服務。

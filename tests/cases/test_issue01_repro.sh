@@ -11,8 +11,8 @@ source "$SCRIPT_DIR/../lib/assert.sh"
 
 trap sandbox_cleanup EXIT
 
-# 1. idle-off is silent and writes ext lock; HPD drop -> Enabled:no proves
-#    real wlopm --on exits 0 without re-enabling output.
+# 1. idle-off is silent and writes ext lock; HPD drop -> Enabled:no is
+#    recovered by Plan 2 idle-on (re-enables HDMI-A-1 silently).
 sandbox_init "hw_hp_e27u_g4.env"
 bash "$USM_CLI" idle-off >/dev/null
 assert_file_exists "$USM_RUN_DIR_OVERRIDE/idle_off.lock" \
@@ -29,8 +29,8 @@ sandbox_set_mock_var "wlr.env" "WLR_HDMI_ENABLED" "no"
 bash "$USM_CLI" idle-on >/dev/null
 assert_file_not_exists "$USM_RUN_DIR_OVERRIDE/idle_off.lock" \
   "idle-on removed lock"
-assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_HDMI_ENABLED="no"' \
-  "wlopm --on alone cannot re-enable Enabled:no HDMI (ISSUE_01 reproduced)"
+assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_HDMI_ENABLED="yes"' \
+  "idle-on re-enabled Enabled:no HDMI (ISSUE_01 fixed by Plan 2)"
 sandbox_cleanup
 
 # 2. USM_HDMI_DISABLE_SCREEN_OFF="true" omits Stage 2 idle-off from swayidle.

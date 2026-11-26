@@ -204,10 +204,21 @@ Swayidle logic adheres to the Single Responsibility Principle (SRP):
     sleeps active outputs — external HDMI via targeted `wlopm --off`
     (never wildcard `*`) and internal `DSI-2` via `wlr-randr` + `bl_power=4`
     for UPM powersave — persisting `ext`/`int`/`dual` in
-    `$USM_RUN_DIR/idle_off.lock`. Hotplug, suspend/resume, and manual
-    `cmd_screen_on` / `cmd_screen_ext` / `cmd_screen_dual` sync DPMS via
-    `_usm_wake_hdmi_dpms` and clear stale locks; UPM Power Key
-    `cmd_screen_switch` wakes idle-slept screens via `cmd_idle_on`.
+    `$USM_RUN_DIR/idle_off.lock`. While external idle-off is active,
+    `handle_event_udev` ignores transient DRM `change` events (HPD drop/bounce
+    on DPMS). On resume, `cmd_idle_on` reconciles real state: waking active
+    HDMI via `wlopm --on`, silently re-enabling `Enabled: no` HDMI via
+    `cmd_screen_ext`/`cmd_screen_dual --silent`, or falling back to
+    `cmd_screen_int --silent` + `$USM_RUN_DIR/state_dirty` if unplugged.
+*   **Manual Power Key & External Wake Guard (`cmd_screen_switch`)**:
+    Supports turning off both internal and external/dual displays. Manual
+    screen-off pauses `swayidle` and writes `$USM_RUN_DIR/manual_off.lock`
+    (so screensavers do not run while the screen is off); wake, hotplug, or
+    suspend/resume clears the lock and restores `swayidle`. If an external app
+    wakes a display, `_reconcile_external_wake` clears stale locks.
+*   **Cross-Process Serialization (`_with_display_lock`)**: Display and sysfs
+    mutations across `monitor`, `idle-off`/`idle-on`, and `screen-switch` are
+    serialized via `flock` on `$USM_RUN_DIR/usm_display.lock`.
 *   **Managed Autostart Block & Config Builder**: `install.sh` wraps USM
     swayidle entries in `# === USM Swayidle Config Start/End ===` markers
     (backing up `wlopm` with `# [USM backup] `, leaving custom configs
@@ -416,9 +427,20 @@ Swayidle 邏輯嚴格遵循單一責任原則（SRP）：
 *   **專用閒置控制（`cmd_idle_off` / `cmd_idle_on`）**：靜默休眠作用中螢幕
     ——外接 HDMI 採具名 `wlopm --off`（嚴禁萬用字元 `*`），內建 `DSI-2` 採
     `wlr-randr` + `bl_power=4` 連動 UPM 省電——並於
-    `$USM_RUN_DIR/idle_off.lock` 記錄 `ext`/`int`/`dual`。熱插拔、休眠喚醒
-    與手動切換皆透過 `_usm_wake_hdmi_dpms` 同步 DPMS 並清鎖；UPM Power Key
-    `cmd_screen_switch` 於閒置休眠中直接導向 `cmd_idle_on` 喚醒。
+    `$USM_RUN_DIR/idle_off.lock` 記錄 `ext`/`int`/`dual`。外接熄屏期間，
+    `handle_event_udev` 會忽略 DPMS 引發的暫時性 DRM `change`（HPD 掉線
+    回彈）；喚醒時 `cmd_idle_on` 依實體狀態對帳：優先以 `wlopm --on` 喚醒，
+    若 HDMI 掉成 `Enabled: no` 則以 `cmd_screen_ext`/`cmd_screen_dual
+    --silent` 靜默重啟，若已實體拔除則切回 `cmd_screen_int --silent` 並標記
+    `$USM_RUN_DIR/state_dirty`。
+*   **電源鍵手動熄屏與外部喚醒防呆（`cmd_screen_switch`）**：支援內建與外接
+    /雙螢幕手動熄屏；熄屏期間暫停 `swayidle` 並寫入
+    `$USM_RUN_DIR/manual_off.lock`（避免熄屏後背景觸發螢幕保護），待喚醒、
+    熱插拔或休眠恢復後自動清鎖並重啟 `swayidle`。若外部程式點亮螢幕，
+    `_reconcile_external_wake` 會自動清理過期鎖。
+*   **跨行程互斥鎖（`_with_display_lock`）**：`monitor`、`idle-off`/
+    `idle-on` 與 `screen-switch` 的顯示與 sysfs 操作皆以
+    `$USM_RUN_DIR/usm_display.lock`（`flock`）串行化。
 *   **受管區塊與設定組裝**：`install.sh` 以 `# === USM Swayidle Config`
     `Start/End ===` 標記管理 `autostart`（自動以 `# [USM backup] ` 備份遷移
     `wlopm`、保留非 `wlopm` 自訂設定，反安裝時自動還原）。

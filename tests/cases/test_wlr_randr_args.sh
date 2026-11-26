@@ -48,6 +48,11 @@ bash "$USM_CLI" screen-ext >/dev/null
 assert_file_contains "$USM_MOCK_LOG" \
   "--output HDMI-A-1 --on --mode 1920x1080@60" \
   "cmd_screen_ext honors USM_EXT_RES"
+: > "$USM_MOCK_LOG"
+bash "$USM_CLI" screen-dual >/dev/null
+assert_file_contains "$USM_MOCK_LOG" \
+  "--output DSI-2 --on .*--output HDMI-A-1 --on --mode 1920x1080@60" \
+  "cmd_screen_dual honors USM_EXT_RES"
 sandbox_cleanup
 
 assert_summary "test_wlr_randr_args"

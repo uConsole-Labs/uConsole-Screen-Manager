@@ -6,9 +6,11 @@ set -euo pipefail
 WLR_FILE="${USM_MOCK_STATE_DIR}/wlr.env"
 OPM_FILE="${USM_MOCK_STATE_DIR}/wlopm.env"
 # shellcheck disable=SC1090
-source "$WLR_FILE"
-# shellcheck disable=SC1090
 source "$OPM_FILE"
+opm_fail_off="${WLOPM_FAIL_OFF:-false}"
+opm_fail_on="${WLOPM_FAIL_ON:-false}"
+# shellcheck disable=SC1090
+source "$WLR_FILE"
 
 printf "wlopm %s\n" "$*" >> "$USM_MOCK_LOG"
 
@@ -45,11 +47,11 @@ if [[ "$target" == "*" ]]; then
   exit 2
 fi
 
-if [[ "$action" == "--off" && "${WLOPM_FAIL_OFF:-false}" == "true" ]]; then
+if [[ "$action" == "--off" && "$opm_fail_off" == "true" ]]; then
   printf "Operation failed for output '%s'.\n" "$target" >&2
   exit 2
 fi
-if [[ "$action" == "--on" && "${WLOPM_FAIL_ON:-false}" == "true" ]]; then
+if [[ "$action" == "--on" && "$opm_fail_on" == "true" ]]; then
   printf "Operation failed for output '%s'.\n" "$target" >&2
   exit 2
 fi
