@@ -1,0 +1,7 @@
+#!/bin/bash
+# Mock sudo: passthrough without root so set_sysfs_val writes to fake sysfs.
+
+set -euo pipefail
+
+printf "sudo %s\n" "$*" >> "$USM_MOCK_LOG"
+exec "$@"

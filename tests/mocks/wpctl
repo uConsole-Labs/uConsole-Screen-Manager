@@ -1,0 +1,15 @@
+#!/bin/bash
+# Mock wpctl: records HDMI audio profile changes in sandbox state.
+
+set -euo pipefail
+
+printf "wpctl %s\n" "$*" >> "$USM_MOCK_LOG"
+if [[ "${1:-}" == "set-profile" ]]; then
+  if [[ "${3:-}" == "0" ]]; then
+    printf "HDMI_AUDIO_PROFILE=off\n" > "${USM_MOCK_STATE_DIR}/audio.env"
+  else
+    printf "HDMI_AUDIO_PROFILE=output:hdmi-stereo\n" \
+      > "${USM_MOCK_STATE_DIR}/audio.env"
+  fi
+fi
+exit 0

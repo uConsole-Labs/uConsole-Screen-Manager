@@ -1,0 +1,143 @@
+#!/bin/bash
+# Mock wlr-randr: mirrors real wlr-randr mode checks and labwc NOOP-1 cleanup.
+
+set -euo pipefail
+
+STATE_FILE="${USM_MOCK_STATE_DIR}/wlr.env"
+# shellcheck disable=SC1090
+source "$STATE_FILE"
+
+if (( $# > 0 )); then
+  printf "wlr-randr %s\n" "$*" >> "$USM_MOCK_LOG"
+fi
+
+if [[ "${WLR_CONNECT_FAIL:-false}" == "true" ]]; then
+  printf "failed to connect to display\n" >&2
+  exit 1
+fi
+
+_save_var() {
+  local key="$1"
+  local val="$2"
+  if grep -q "^${key}=" "$STATE_FILE"; then
+    sed -i "s|^${key}=.*|${key}=\"${val}\"|" "$STATE_FILE"
+  else
+    printf '%s="%s"\n' "$key" "$val" >> "$STATE_FILE"
+  fi
+}
+
+_print_output() {
+  local name="$1"
+  local enabled="$2"
+  local modes="$3"
+  local preferred="${4:-}"
+  printf '%s "Mock %s"\n' "$name" "$name"
+  printf "  Enabled: %s\n" "$enabled"
+  if [[ -n "$modes" ]]; then
+    printf "  Modes:\n"
+    local m
+    for m in $modes; do
+      local tag=""
+      if [[ "$m" == "$preferred" && "$enabled" == "yes" ]]; then
+        tag=" (preferred, current)"
+      elif [[ "$m" == "$preferred" ]]; then
+        tag=" (preferred)"
+      elif [[ "$enabled" == "yes" ]]; then
+        tag=" (current)"
+      fi
+      printf "    %s px, 60.000000 Hz%s\n" "$m" "$tag"
+    done
+  fi
+}
+
+if (( $# == 0 )); then
+  if [[ "${WLR_HAS_HDMI:-false}" == "true" ]]; then
+    _print_output "HDMI-A-1" "${WLR_HDMI_ENABLED:-no}" \
+      "${WLR_HDMI_MODES:-}" "${WLR_HDMI_PREFERRED:-}"
+  fi
+  if [[ "${WLR_HAS_NOOP:-false}" == "true" ]]; then
+    _print_output "NOOP-1" "yes" "1920x1080" "1920x1080"
+  fi
+  if [[ "${WLR_HAS_DSI:-false}" == "true" ]]; then
+    _print_output "DSI-2" "${WLR_DSI_ENABLED:-no}" \
+      "${WLR_DSI_MODES:-720x1280}" "720x1280"
+  fi
+  exit 0
+fi
+
+cur_out=""
+new_dsi="${WLR_DSI_ENABLED:-no}"
+new_hdmi="${WLR_HDMI_ENABLED:-no}"
+new_noop="${WLR_HAS_NOOP:-false}"
+
+while (( $# > 0 )); do
+  case "$1" in
+    --output)
+      shift
+      cur_out="${1:-}"
+      out_exists=false
+      if [[ "$cur_out" == "DSI-2" && "${WLR_HAS_DSI:-false}" == "true" ]]; then
+        out_exists=true
+      elif [[ "$cur_out" == "HDMI-A-1" && \
+              "${WLR_HAS_HDMI:-false}" == "true" ]]; then
+        out_exists=true
+      elif [[ "$cur_out" == "NOOP-1" && \
+              "${WLR_HAS_NOOP:-false}" == "true" ]]; then
+        out_exists=true
+      fi
+      if [[ "$out_exists" != "true" ]]; then
+        printf "unknown output %s\n" "$cur_out" >&2
+        exit 1
+      fi
+      ;;
+    --on)
+      [[ "$cur_out" == "DSI-2" ]] && new_dsi="yes"
+      [[ "$cur_out" == "HDMI-A-1" ]] && new_hdmi="yes"
+      ;;
+    --off)
+      [[ "$cur_out" == "DSI-2" ]] && new_dsi="no"
+      [[ "$cur_out" == "HDMI-A-1" ]] && new_hdmi="no"
+      [[ "$cur_out" == "NOOP-1" ]] && new_noop="false"
+      ;;
+    --mode)
+      shift
+      req_mode="${1:-}"
+      req_res="${req_mode%%@*}"
+      avail=""
+      [[ "$cur_out" == "DSI-2" ]] && avail="${WLR_DSI_MODES:-}"
+      [[ "$cur_out" == "HDMI-A-1" ]] && avail="${WLR_HDMI_MODES:-}"
+      found=false
+      for m in $avail; do
+        if [[ "$m" == "$req_res" ]]; then
+          found=true
+          break
+        fi
+      done
+      if [[ "$found" != "true" ]]; then
+        printf "unknown mode: %s\n" "$req_mode" >&2
+        exit 1
+      fi
+      ;;
+    --transform|--pos|--scale)
+      shift
+      ;;
+    *)
+      ;;
+  esac
+  shift || true
+done
+
+if [[ "${WLR_CANCEL_APPLY:-false}" == "true" ]]; then
+  printf "configuration cancelled, please try again\n" >&2
+  exit 1
+fi
+
+if [[ "${WLR_FAIL_APPLY:-false}" == "true" ]]; then
+  printf "failed to apply configuration\n" >&2
+  exit 1
+fi
+
+_save_var "WLR_DSI_ENABLED" "$new_dsi"
+_save_var "WLR_HDMI_ENABLED" "$new_hdmi"
+_save_var "WLR_HAS_NOOP" "$new_noop"
+exit 0

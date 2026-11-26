@@ -1,0 +1,10 @@
+#!/bin/bash
+# Mock systemctl: handles is-system-running, is-active, import-environment.
+
+set -euo pipefail
+
+printf "systemctl %s\n" "$*" >> "$USM_MOCK_LOG"
+if [[ "$*" == *"is-system-running"* ]]; then
+  printf "running\n"
+fi
+exit 0

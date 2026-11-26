@@ -1,0 +1,71 @@
+#!/bin/bash
+# Mock wlopm: only sees Enabled: yes outputs; unmatched target warns & exits 0.
+
+set -euo pipefail
+
+WLR_FILE="${USM_MOCK_STATE_DIR}/wlr.env"
+OPM_FILE="${USM_MOCK_STATE_DIR}/wlopm.env"
+# shellcheck disable=SC1090
+source "$WLR_FILE"
+# shellcheck disable=SC1090
+source "$OPM_FILE"
+
+printf "wlopm %s\n" "$*" >> "$USM_MOCK_LOG"
+
+_save_wlr() {
+  local key="$1"
+  local val="$2"
+  if grep -q "^${key}=" "$WLR_FILE"; then
+    sed -i "s|^${key}=.*|${key}=\"${val}\"|" "$WLR_FILE"
+  else
+    printf '%s="%s"\n' "$key" "$val" >> "$WLR_FILE"
+  fi
+}
+
+action="${1:-}"
+target="${2:-}"
+
+if [[ -z "$action" ]]; then
+  if [[ "${WLR_HAS_HDMI:-false}" == "true" && \
+        "${WLR_HDMI_ENABLED:-no}" == "yes" ]]; then
+    printf "HDMI-A-1 %s\n" "${WLR_HDMI_POWER:-on}"
+  fi
+  if [[ "${WLR_HAS_DSI:-false}" == "true" && \
+        "${WLR_DSI_ENABLED:-no}" == "yes" ]]; then
+    printf "DSI-2 on\n"
+  fi
+  exit 0
+fi
+
+# NOTE: Real wlopm (wlopm.zig:51-54) accepts the '*' wildcard, but AGENTS.md
+# strictly forbids wildcard wlopm calls in USM (to avoid waking DSI-2 in HDMI
+# single mode). Intentionally fail here as a guardrail against regressions.
+if [[ "$target" == "*" ]]; then
+  printf "error: wildcard '*' is forbidden by USM invariants.\n" >&2
+  exit 2
+fi
+
+if [[ "$action" == "--off" && "${WLOPM_FAIL_OFF:-false}" == "true" ]]; then
+  printf "Operation failed for output '%s'.\n" "$target" >&2
+  exit 2
+fi
+if [[ "$action" == "--on" && "${WLOPM_FAIL_ON:-false}" == "true" ]]; then
+  printf "Operation failed for output '%s'.\n" "$target" >&2
+  exit 2
+fi
+
+# Mirror real wlopm: wl_output only exists for Enabled: yes outputs.
+if [[ "$target" == "HDMI-A-1" ]]; then
+  if [[ "${WLR_HAS_HDMI:-false}" != "true" || \
+        "${WLR_HDMI_ENABLED:-no}" != "yes" ]]; then
+    printf "warning: Output identifier '%s' did not match any output.\n" \
+      "$target" >&2
+    exit 0
+  fi
+  if [[ "$action" == "--off" ]]; then
+    _save_wlr "WLR_HDMI_POWER" "off"
+  elif [[ "$action" == "--on" ]]; then
+    _save_wlr "WLR_HDMI_POWER" "on"
+  fi
+fi
+exit 0

@@ -1,0 +1,17 @@
+#!/bin/bash
+# Mock pw-cli: reports mock vc4-hdmi PipeWire device so async audio init exits.
+
+set -euo pipefail
+
+STATE_FILE="${USM_MOCK_STATE_DIR}/audio.env"
+# shellcheck disable=SC1090
+source "$STATE_FILE"
+
+if [[ "${1:-}" == "ls" ]]; then
+  printf "\tid 49, type PipeWire:Interface:Device/3\n"
+  printf '\t\tdevice.name = "alsa_card.platform-107c701400.hdmi-vc4-hdmi"\n'
+elif [[ "${1:-}" == "e" ]]; then
+  printf '      Prop: key Spa:Pod:Object:Param:Profile:name\n'
+  printf '        String "%s"\n' "${HDMI_AUDIO_PROFILE:-off}"
+fi
+exit 0

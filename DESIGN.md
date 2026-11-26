@@ -225,6 +225,20 @@ Swayidle logic adheres to the Single Responsibility Principle (SRP):
     (waking HDMI and clearing `idle_off.lock` first); custom swayidle
     configs are never modified.
 
+### Upstream Source References
+
+For verifying Wayland protocol, output power, and compositor behavior:
+- **wlr-randr** (`zwlr_output_management_v1` client):
+  https://gitlab.freedesktop.org/emersion/wlr-randr
+- **wlopm** (`zwlr_output_power_management_v1` client):
+  https://git.sr.ht/~leon_plickat/wlopm
+- **wlr-protocols** (`wlr-output-management` / `wlr-output-power-management`):
+  https://gitlab.freedesktop.org/wlroots/wlr-protocols
+- **labwc** (Raspberry Pi OS Trixie Wayland compositor):
+  https://github.com/labwc/labwc
+- **wlroots** (DRM backend & output management implementation):
+  https://gitlab.freedesktop.org/wlroots/wlroots
+
 # 系統架構與設計文件 (Traditional Chinese)
 
 本文件說明 uConsole Screen Manager (USM) 的底層技術設計與邏輯，
@@ -418,3 +432,17 @@ Swayidle 邏輯嚴格遵循單一責任原則（SRP）：
     `idle-off`/`idle-on` 逾時。HDMI 狀態改變時，`manage_swayidle` 經
     `_restart_swayidle_on_hdmi_change` 重啟 USM 管理的 swayidle（先喚醒 HDMI
     並清除 `idle_off.lock`）；自訂 swayidle 設定絕不修改。
+
+### 上游開源程式碼參考
+
+供查核 Wayland 協議、輸出電源管理與合成器底層行為：
+- **wlr-randr** (`zwlr_output_management_v1` 客戶端)：
+  https://gitlab.freedesktop.org/emersion/wlr-randr
+- **wlopm** (`zwlr_output_power_management_v1` 客戶端)：
+  https://git.sr.ht/~leon_plickat/wlopm
+- **wlr-protocols** (`wlr-output-management` / `wlr-output-power-management`)：
+  https://gitlab.freedesktop.org/wlroots/wlr-protocols
+- **labwc** (Raspberry Pi OS Trixie Wayland 合成器)：
+  https://github.com/labwc/labwc
+- **wlroots** (DRM 後端與輸出管理實作)：
+  https://gitlab.freedesktop.org/wlroots/wlroots

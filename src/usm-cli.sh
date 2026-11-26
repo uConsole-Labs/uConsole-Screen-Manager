@@ -5,7 +5,8 @@ set -euo pipefail
 
 # --- 1. General Config ---
 readonly CONF_FILE="${USM_CONF_FILE:-$HOME/.config/usm/usm.conf}"
-readonly DRM_PATH="/sys/class/drm"
+readonly SYSFS_ROOT="${USM_SYSFS_ROOT:-/sys}"
+readonly DRM_PATH="$SYSFS_ROOT/class/drm"
 readonly LOG_PREFIX="[USM] CLI:"
 readonly SVC_NAME="usm.service"
 readonly VALID_SYSTEM_STATES=("running" "degraded")
@@ -36,7 +37,7 @@ readonly CONF_MODE_SINGLE="single"
 readonly FLAG_NO="no"
 readonly FLAG_SILENT="--silent"
 readonly FLAG_YES="yes"
-readonly PANEL_DRIVER_PATH="/sys/bus/mipi-dsi/drivers/panel-cwu50"
+readonly PANEL_DRIVER_PATH="$SYSFS_ROOT/bus/mipi-dsi/drivers/panel-cwu50"
 readonly MODE_DUAL="dual"
 readonly MODE_EXT="ext"
 readonly MODE_INT="int"
@@ -49,7 +50,6 @@ readonly SCREEN_OUT_INT="DSI-2"
 readonly SCREEN_POS_EXT="1280,0"
 readonly SCREEN_POS_INT="0,0"
 readonly SCREEN_RES_1024_768="1024x768"
-readonly SCREEN_RES_2560_1440="2560x1440"
 readonly SCREEN_RES_720_1280="720x1280"
 readonly SCREEN_TRANS_NORMAL="normal"
 readonly SCREEN_TRANS_RIGHT="270"
@@ -669,7 +669,7 @@ usm_hw_screen_on() {
 
         local dsi_stat
         dsi_stat=$(
-          find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
+          find "$DRM_PATH" -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
             2>/dev/null | head -n 1
         )
         if [[ -n "$dsi_stat" ]]; then
@@ -691,7 +691,7 @@ usm_hw_screen_on() {
     log "Hardware ON Sequence for HDMI"
     local hdmi_stat
     hdmi_stat=$(
-      find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
+      find "$DRM_PATH" -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
         2>/dev/null | head -n 1
     )
     if [[ -n "$hdmi_stat" ]]; then
@@ -737,7 +737,7 @@ usm_hw_screen_off() {
         log "Hardware OFF Sequence for DSI"
         local dsi_stat
         dsi_stat=$(
-          find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
+          find "$DRM_PATH" -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
             2>/dev/null | head -n 1
         )
         if [[ -n "$dsi_stat" ]]; then
@@ -769,7 +769,7 @@ usm_hw_screen_off() {
       log "Hardware OFF Sequence for HDMI (DRM status=off, HPD disabled)"
       local hdmi_stat
       hdmi_stat=$(
-        find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
+        find "$DRM_PATH" -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
           2>/dev/null | head -n 1
       )
       if [[ -n "$hdmi_stat" ]]; then
@@ -800,7 +800,7 @@ usm_hw_screen_off() {
 #   Always 0.
 # ==============================================================================
 _get_backlight_path() {
-  find /sys/class/backlight \
+  find "$SYSFS_ROOT/class/backlight" \
     -maxdepth 1 -mindepth 1 2>/dev/null \
     | head -n 1 || true
 }
@@ -820,7 +820,7 @@ _get_backlight_path() {
 #   Always 0.
 # ==============================================================================
 _get_fb_path() {
-  find /sys/class/graphics -name "fb0" \
+  find "$SYSFS_ROOT/class/graphics" -name "fb0" \
     2>/dev/null | head -n 1 || true
 }
 
@@ -882,18 +882,17 @@ _build_wlr_internal_cmd() {
   if [[ "$int_enabled" == "$SCREEN_ENABLED_SKIP" ]]; then
     log "Internal screen ($SCREEN_OUT_INT) config explicitly skipped."
   elif [[ "$has_int" -eq 0 ]]; then
-    local int_state="--off"
     if [[ "$int_enabled" == "$SCREEN_ENABLED_YES" ]]; then
-      int_state="--on"
+      int_ref_cmd+=(
+        "--output" "$SCREEN_OUT_INT"
+        "--on"
+        "--mode" "$SCREEN_RES_720_1280"
+        "--transform" "$SCREEN_TRANS_RIGHT"
+        "--pos" "$SCREEN_POS_INT"
+      )
+    else
+      int_ref_cmd+=("--output" "$SCREEN_OUT_INT" "--off")
     fi
-
-    int_ref_cmd+=(
-      "--output" "$SCREEN_OUT_INT"
-      "$int_state"
-      "--mode" "$SCREEN_RES_720_1280"
-      "--transform" "$SCREEN_TRANS_RIGHT"
-      "--pos" "$SCREEN_POS_INT"
-    )
     log "Internal screen ($SCREEN_OUT_INT) config added."
   else
     log "Internal screen ($SCREEN_OUT_INT) not detected. Skipped."
@@ -912,7 +911,7 @@ _build_wlr_internal_cmd() {
 # Arguments:
 #   $1 - ext_enabled: SCREEN_ENABLED_YES or SCREEN_ENABLED_NO or SKIP
 #   $2 - has_ext: 0 if detected, 1 if not
-#   $3 - ext_mode: The resolution/mode to apply
+#   $3 - ext_mode: The resolution/mode to apply (empty for preferred)
 #   $4 - ext_ref_cmd: nameref to the array holding the command
 # Outputs:
 #   Writes logs to stdout/log file.
@@ -922,24 +921,24 @@ _build_wlr_internal_cmd() {
 _build_wlr_external_cmd() {
   local ext_enabled="$1"
   local has_ext="$2"
-  local ext_mode="$3"
+  local ext_mode="${3:-}"
   local -n ext_ref_cmd="$4"
 
   if [[ "$ext_enabled" == "$SCREEN_ENABLED_SKIP" ]]; then
     log "External screen ($SCREEN_OUT_EXT) config explicitly skipped."
   elif [[ "$has_ext" -eq 0 ]]; then
-    local ext_state="--off"
     if [[ "$ext_enabled" == "$SCREEN_ENABLED_YES" ]]; then
-      ext_state="--on"
+      ext_ref_cmd+=("--output" "$SCREEN_OUT_EXT" "--on")
+      if [[ -n "$ext_mode" ]]; then
+        ext_ref_cmd+=("--mode" "$ext_mode")
+      fi
+      ext_ref_cmd+=(
+        "--transform" "$SCREEN_TRANS_NORMAL"
+        "--pos" "$SCREEN_POS_EXT"
+      )
+    else
+      ext_ref_cmd+=("--output" "$SCREEN_OUT_EXT" "--off")
     fi
-
-    ext_ref_cmd+=(
-      "--output" "$SCREEN_OUT_EXT"
-      "$ext_state"
-      "--mode" "$ext_mode"
-      "--transform" "$SCREEN_TRANS_NORMAL"
-      "--pos" "$SCREEN_POS_EXT"
-    )
     log "External screen ($SCREEN_OUT_EXT) config added."
   else
     log "External screen ($SCREEN_OUT_EXT) not detected. Skipped."
@@ -973,7 +972,7 @@ _build_wlr_external_cmd() {
 exec_wlr_randr() {
   local int_enabled="$1"
   local ext_enabled="$2"
-  local ext_mode="$3"
+  local ext_mode="${3:-}"
 
   auto_update_wayland_display
 
@@ -1391,6 +1390,9 @@ _restart_swayidle_on_hdmi_change() {
     if [[ "$idle_state" == "$MODE_EXT" || "$idle_state" == "$MODE_DUAL" ]]; then
       log "HDMI connected during idle-off ($idle_state): waking HDMI."
       _usm_wake_hdmi_dpms
+      rm -f "$lock_file"
+    else
+      log "HDMI connected during idle-off ($idle_state): clearing stale lock."
       rm -f "$lock_file"
     fi
   fi
@@ -2008,7 +2010,7 @@ cmd_screen_int() {
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
     "$SCREEN_ENABLED_NO" \
-    "$SCREEN_RES_2560_1440" || ret=$?
+    "" || ret=$?
   log "First exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
@@ -2078,7 +2080,7 @@ cmd_screen_ext() {
   exec_wlr_randr \
     "$SCREEN_ENABLED_NO" \
     "$SCREEN_ENABLED_YES" \
-    "$SCREEN_RES_2560_1440" || ret=$?
+    "${USM_EXT_RES:-}" || ret=$?
   log "First exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
@@ -2142,7 +2144,7 @@ cmd_screen_dual() {
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
     "$SCREEN_ENABLED_YES" \
-    "$SCREEN_RES_2560_1440" || ret=$?
+    "${USM_EXT_RES:-}" || ret=$?
   log "Second exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
@@ -2630,7 +2632,7 @@ _print_hw_internal_screen() {
     printf "  Panel Driver: Not Loaded\n"
   fi
 
-  dsi_stat=$(find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
+  dsi_stat=$(find "$DRM_PATH" -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
     2>/dev/null | head -n 1)
   if [[ -n "$dsi_stat" ]] && [[ -f "$dsi_stat/status" ]]; then
     printf "  DRM Status: %s\n" \
@@ -2694,14 +2696,14 @@ _print_hw_external_screen() {
   fb_ext="$1"
 
   printf "\n[External Screen: %s]\n" "$SCREEN_OUT_EXT"
-  hdmi_stat=$(find /sys/class/drm -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
+  hdmi_stat=$(find "$DRM_PATH" -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
     2>/dev/null | head -n 1)
   if [[ -n "$hdmi_stat" ]]; then
     local card_name card_base driver_path
     card_name=$(basename "$hdmi_stat")
     card_base=${card_name%%-*}
-    if [[ -e "/sys/class/drm/$card_base/device/driver" ]]; then
-      driver_path=$(readlink -f "/sys/class/drm/$card_base/device/driver" \
+    if [[ -e "$DRM_PATH/$card_base/device/driver" ]]; then
+      driver_path=$(readlink -f "$DRM_PATH/$card_base/device/driver" \
         2>/dev/null)
       printf "  Display Driver: Loaded (%s)\n" "$(basename "$driver_path")"
     else
@@ -2757,7 +2759,7 @@ cmd_hw_status() {
   local fb_int=""
   local fb_ext=""
 
-  for fb_path in /sys/class/graphics/fb*; do
+  for fb_path in "$SYSFS_ROOT/class/graphics"/fb*; do
     [[ -e "$fb_path" ]] || continue
     fb_name=$(cat "$fb_path/name" 2>/dev/null || printf "%s\n" "Unknown")
     if [[ "$fb_name" == *"dsi"* ]]; then
@@ -2866,6 +2868,15 @@ cmd_monitor() {
   wait_for_compositor
   setup_runtime_dir
   rm -f "$USM_RUN_DIR/usm_suspending.lock"
+  if [[ -f "$USM_RUN_DIR/idle_off.lock" ]]; then
+    local stale_idle=""
+    stale_idle=$(cat "$USM_RUN_DIR/idle_off.lock" 2>/dev/null || true)
+    if [[ "$stale_idle" == "$MODE_EXT" || "$stale_idle" == "$MODE_DUAL" ]]; then
+      log "Stale idle_off.lock ($stale_idle) found at startup: waking HDMI."
+      _usm_wake_hdmi_dpms
+    fi
+    rm -f "$USM_RUN_DIR/idle_off.lock"
+  fi
   update_display_by_hdmi_state
 
   init_hdmi_audio_default_async &

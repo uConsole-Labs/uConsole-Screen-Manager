@@ -1,0 +1,17 @@
+#!/bin/bash
+# Mock pgrep: sandbox-scoped process check (never inspects host swayidle).
+
+set -euo pipefail
+
+STATE_FILE="${USM_MOCK_STATE_DIR}/swayidle.env"
+# shellcheck disable=SC1090
+source "$STATE_FILE"
+
+if [[ "$*" == *"swayidle"* ]]; then
+  if [[ "${SWAYIDLE_RUNNING:-0}" == "1" ]]; then
+    printf "99999\n"
+    exit 0
+  fi
+  exit 1
+fi
+exit 1

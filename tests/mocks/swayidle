@@ -1,0 +1,8 @@
+#!/bin/bash
+# Mock swayidle: records launch and marks sandbox swayidle running.
+
+set -euo pipefail
+
+printf "swayidle %s\n" "$*" >> "$USM_MOCK_LOG"
+printf "SWAYIDLE_RUNNING=1\n" > "${USM_MOCK_STATE_DIR}/swayidle.env"
+exit 0

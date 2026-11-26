@@ -1,0 +1,10 @@
+#!/bin/bash
+# Mock systemd-run: records invocation and updates sandbox swayidle state.
+
+set -euo pipefail
+
+printf "systemd-run %s\n" "$*" >> "$USM_MOCK_LOG"
+if [[ "$*" == *"swayidle"* ]]; then
+  printf "SWAYIDLE_RUNNING=1\n" > "${USM_MOCK_STATE_DIR}/swayidle.env"
+fi
+exit 0

@@ -1,0 +1,7 @@
+#!/bin/bash
+# Mock notify-send: records desktop notifications for silent-mode assertions.
+
+set -euo pipefail
+
+printf "notify-send %s\n" "$*" >> "$USM_MOCK_LOG"
+exit 0
