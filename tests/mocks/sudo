@@ -4,4 +4,13 @@
 set -euo pipefail
 
 printf "sudo %s\n" "$*" >> "$USM_MOCK_LOG"
-exec "$@"
+rc=0
+"$@" || rc=$?
+if [[ "$rc" -eq 0 && "$*" == *"DSI-2/status"* ]]; then
+  dsi_status=$(cat "$USM_SYSFS_ROOT/class/drm/card1-DSI-2/status" \
+    2>/dev/null || true)
+  if [[ "$dsi_status" == "detect" ]]; then
+    date +%s%3N > "$USM_MOCK_STATE_DIR/dsi_hw_on_ms"
+  fi
+fi
+exit "$rc"

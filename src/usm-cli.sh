@@ -59,6 +59,7 @@ readonly SYSFS_BACKLIGHT_POWER_OFF="4"
 readonly SYSFS_BACKLIGHT_POWER_ON="0"
 readonly SYSFS_FRAMEBUFFER_BLANK="1"
 readonly SYSFS_FRAMEBUFFER_UNBLANK="0"
+readonly WLR_RETRY_MAX=3
 
 # --- 5. Audio ---
 readonly AUDIO_DEVICE_HDMI="vc4-hdmi"
@@ -1003,11 +1004,24 @@ _build_wlr_internal_cmd() {
 # Returns:
 #   0 on success.
 # ==============================================================================
+_has_wlr_preferred_mode() {
+  local wlr_out="$1"
+  local target="$2"
+  printf '%s\n' "$wlr_out" | awk -v sc="$target" '
+    /^[^[:space:]]/ { in_out = ($1 == sc); in_modes = 0; next }
+    in_out && /^[[:space:]]+Modes:/ { in_modes = 1; next }
+    in_out && in_modes && /^[[:space:]]{2}[^[:space:]]/ { in_modes = 0 }
+    in_out && in_modes && /\(preferred(,|\))/ { found = 1; exit }
+    END { exit !found }
+  '
+}
+
 _build_wlr_external_cmd() {
   local ext_enabled="$1"
   local has_ext="$2"
   local ext_mode="${3:-}"
   local -n ext_ref_cmd="$4"
+  local has_ext_pref="${5:-1}"
 
   if [[ "$ext_enabled" == "$SCREEN_ENABLED_SKIP" ]]; then
     log "External screen ($SCREEN_OUT_EXT) config explicitly skipped."
@@ -1016,6 +1030,8 @@ _build_wlr_external_cmd() {
       ext_ref_cmd+=("--output" "$SCREEN_OUT_EXT" "--on")
       if [[ -n "$ext_mode" ]]; then
         ext_ref_cmd+=("--mode" "$ext_mode")
+      elif [[ "$has_ext_pref" -eq 0 ]]; then
+        ext_ref_cmd+=("--preferred")
       fi
       ext_ref_cmd+=(
         "--transform" "$SCREEN_TRANS_NORMAL"
@@ -1096,8 +1112,15 @@ exec_wlr_randr() {
 
   log "Detected outputs: ${active_outputs[*]}"
 
+  local has_ext_pref=1
+  if [[ "$has_ext" -eq 0 ]] && \
+     _has_wlr_preferred_mode "$wlr_output" "$SCREEN_OUT_EXT"; then
+    has_ext_pref=0
+  fi
+
   _build_wlr_internal_cmd "$int_enabled" "$has_int" full_cmd
-  _build_wlr_external_cmd "$ext_enabled" "$has_ext" "$ext_mode" full_cmd
+  _build_wlr_external_cmd "$ext_enabled" "$has_ext" "$ext_mode" \
+    full_cmd "$has_ext_pref"
 
   # Prevent blackout: do not disable internal screen if requested external
   # screen is missing.
@@ -1115,27 +1138,37 @@ exec_wlr_randr() {
     return 1
   fi
 
-  # Pre-cleanup: Gracefully disable placeholder output (NOOP) if present
-  # to prevent coordinate overlap conflicts.
-  if [[ -n "$noop_output" ]]; then
-    log "Pre-cleanup: Disabling placeholder output $noop_output..."
-    wlr-randr --output "$noop_output" --off >/dev/null 2>&1 || true
-  fi
-
-  log "Final command: ${full_cmd[*]}"
-
+  local attempt=1
   local rc=0
   local wlr_out=""
-  wlr_out=$("${full_cmd[@]}" 2>&1) || rc=$?
+  while (( attempt <= WLR_RETRY_MAX )); do
+    # Pre-cleanup: Gracefully disable placeholder output (NOOP) if present
+    # to prevent coordinate overlap conflicts.
+    if [[ -n "$noop_output" ]]; then
+      log "Pre-cleanup: Disabling placeholder output $noop_output..."
+      wlr-randr --output "$noop_output" --off >/dev/null 2>&1 || true
+    fi
 
-  if [[ $rc -eq 0 ]]; then
-    log "exec_wlr_randr succeeded."
-    return 0
-  else
-    log "exec_wlr_randr failed. (exit code: $rc)"
+    log "Final command (attempt $attempt/$WLR_RETRY_MAX): ${full_cmd[*]}"
+
+    rc=0
+    wlr_out=""
+    wlr_out=$("${full_cmd[@]}" 2>&1) || rc=$?
+
+    if [[ $rc -eq 0 ]]; then
+      log "exec_wlr_randr succeeded."
+      return 0
+    fi
+
+    log "exec_wlr_randr failed (attempt $attempt/$WLR_RETRY_MAX, rc: $rc)."
     [[ -n "$wlr_out" ]] && log "exec_wlr_randr output: $wlr_out"
-    return 1
-  fi
+    if (( attempt < WLR_RETRY_MAX )); then
+      sleep "$RETRY_DELAY_SEC"
+    fi
+    attempt=$((attempt + 1))
+  done
+
+  return 1
 }
 
 # ==============================================================================
@@ -1487,6 +1520,32 @@ _restart_swayidle_on_hdmi_change() {
   cmd_start_swayidle || true
   LAST_SWAYIDLE_HDMI_STATE="$hdmi_state"
   return 0
+}
+
+# ==============================================================================
+# _sync_usm_swayidle_on_startup
+#
+# Rebuilds USM-managed swayidle once when the monitor daemon starts (including
+# `usm restart`), ensuring edited usm.conf idle settings always take effect
+# regardless of USM_HDMI_DISABLE_SCREEN_OFF / USM_HDMI_DISABLE_SWAYIDLE flags.
+# Custom non-USM swayidle configs in autostart are never touched.
+# ==============================================================================
+_sync_usm_swayidle_on_startup() {
+  local autostart_file="$HOME/.config/labwc/autostart"
+  if [[ ! -f "$autostart_file" ]] || \
+     ! grep -qxF "# === USM Swayidle Config Start ===" "$autostart_file"; then
+    return 0
+  fi
+
+  local hdmi_state
+  hdmi_state=$(check_hdmi_state)
+  log "Syncing USM-managed swayidle on daemon startup..."
+  cmd_stop_swayidle
+  if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" != "true" ]] || \
+     [[ "$hdmi_state" != "$STATE_HDMI_CONN" ]]; then
+    cmd_start_swayidle || true
+  fi
+  LAST_SWAYIDLE_HDMI_STATE="$hdmi_state"
 }
 
 # ==============================================================================
@@ -2541,22 +2600,8 @@ _cmd_idle_off_locked() {
   local ext_off=1
   local int_off=1
 
-  if usm_is_screen_on "$SCREEN_OUT_EXT"; then
-    if command -v wlopm >/dev/null 2>&1; then
-      log "Idle-off: turning off external screen ($SCREEN_OUT_EXT) via wlopm."
-      printf "%s\n" "$MODE_EXT" > "$USM_RUN_DIR/idle_off.lock"
-      local err_msg=""
-      if err_msg=$(wlopm --off "$SCREEN_OUT_EXT" 2>&1); then
-        ext_off=0
-      else
-        rm -f "$USM_RUN_DIR/idle_off.lock"
-        log "Warning: wlopm --off $SCREEN_OUT_EXT failed: $err_msg"
-      fi
-    else
-      log "Warning: wlopm not found; skipping external screen idle-off."
-    fi
-  fi
-
+  # Turn off internal DSI-2 BEFORE external wlopm --off: wlr-randr commits all
+  # enabled heads and would otherwise re-enable HDMI-A-1 DPMS in dual mode.
   if usm_is_screen_on "$SCREEN_OUT_INT"; then
     log "Idle-off: turning off internal screen ($SCREEN_OUT_INT)."
     if exec_wlr_randr "$SCREEN_ENABLED_NO" "$SCREEN_ENABLED_SKIP" \
@@ -2565,6 +2610,26 @@ _cmd_idle_off_locked() {
       int_off=0
     else
       log "Warning: Idle-off failed to disable $SCREEN_OUT_INT."
+    fi
+  fi
+
+  if usm_is_screen_on "$SCREEN_OUT_EXT"; then
+    if command -v wlopm >/dev/null 2>&1; then
+      log "Idle-off: turning off external screen ($SCREEN_OUT_EXT) via wlopm."
+      local pre_state="$MODE_EXT"
+      [[ $int_off -eq 0 ]] && pre_state="$MODE_DUAL"
+      printf "%s\n" "$pre_state" > "$USM_RUN_DIR/idle_off.lock"
+      local err_msg=""
+      if err_msg=$(wlopm --off "$SCREEN_OUT_EXT" 2>&1); then
+        ext_off=0
+      else
+        if [[ $int_off -ne 0 ]]; then
+          rm -f "$USM_RUN_DIR/idle_off.lock"
+        fi
+        log "Warning: wlopm --off $SCREEN_OUT_EXT failed: $err_msg"
+      fi
+    else
+      log "Warning: wlopm not found; skipping external screen idle-off."
     fi
   fi
 
@@ -3047,6 +3112,7 @@ cmd_monitor() {
     fi
     rm -f "$USM_RUN_DIR/idle_off.lock"
   fi
+  _sync_usm_swayidle_on_startup
   _with_display_lock update_display_by_hdmi_state || true
 
   init_hdmi_audio_default_async &

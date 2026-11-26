@@ -229,12 +229,84 @@ Swayidle logic adheres to the Single Responsibility Principle (SRP):
 *   **Hardware & Exit Transitions**: `manage_swayidle` and `cleanup_on_exit`
     delegate to `cmd_start_swayidle` / `cmd_stop_swayidle` when
     `USM_HDMI_DISABLE_SWAYIDLE="true"`.
-*   **HDMI Screen-Off Guard**: with `USM_HDMI_DISABLE_SCREEN_OFF="true"`
-    (default), `cmd_start_swayidle` omits the Stage 2 `idle-off`/`idle-on`
-    timeout while HDMI is connected. `manage_swayidle` restarts USM-managed
-    swayidle on HDMI state change via `_restart_swayidle_on_hdmi_change`
-    (waking HDMI and clearing `idle_off.lock` first); custom swayidle
-    configs are never modified.
+*   **HDMI Screen-Off Guard & Startup Sync**: with
+    `USM_HDMI_DISABLE_SCREEN_OFF="true"` (default), `cmd_start_swayidle`
+    omits the Stage 2 `idle-off`/`idle-on` timeout while HDMI is connected.
+    On `cmd_monitor` startup (`usm restart`), `_sync_usm_swayidle_on_startup`
+    restarts USM-managed `swayidle` once so edited `usm.conf` idle settings
+    always apply regardless of flag combination. `manage_swayidle` restarts
+    USM-managed swayidle on HDMI state change via
+    `_restart_swayidle_on_hdmi_change` (waking HDMI and clearing
+    `idle_off.lock` first); custom swayidle configs are never modified.
+
+### Automated Sandbox Testing Architecture
+
+USM includes a zero-dependency pure-Bash sandbox test suite under `tests/`
+(all files kept `0644`, executed via `bash tests/run_tests.sh`).
+`run_tests.sh` runs `bash -n`, `shellcheck`, `<= 80 chars/line` checks, and
+every suite in `tests/cases/test_*.sh`. `tests/lib/` isolates `HOME`,
+`XDG_RUNTIME_DIR`, `USM_RUN_DIR_OVERRIDE`, and `USM_SYSFS_ROOT`;
+`tests/mocks/` provides 13 upstream-aligned mocks (including a `wlopm *`
+wildcard guardrail); `tests/fixtures/` supplies 3 hardware profiles
+(HP E27u G4, generic 1080p, DSI-only).
+
+*   **`test_wlr_randr_args.sh`**:
+    *   `NOOP-1` pre-cleanup precedes `DSI-2 --on`; `--off` omits `--mode`,
+        `--transform`, and `--pos`.
+    *   Generic 1080p monitor uses `--preferred` when `USM_EXT_RES=""` (and
+        omits `--preferred` safely if EDID has no `(preferred)` mode).
+    *   Explicit `USM_EXT_RES` is honored in both `screen-ext` and
+        `screen-dual`; `screen-dual` Stage 2 restores preferred `2560x1440`
+        after Stage 1 `1024x768`.
+*   **`test_hw_sequencing.sh`**:
+    *   `ext -> int`: DSI hardware ON (`bl_power=0`) precedes `wlr-randr
+        --on`, while preserving HDMI DRM HPD.
+    *   `int -> ext`: `wlr-randr --off` precedes DSI hardware OFF
+        (`bl_power=4`, DRM `status=off`).
+*   **`test_lock_and_state.sh`**:
+    *   Monitor startup wakes HDMI DPMS and clears stale `ext`
+        `idle_off.lock`; live HDMI hotplug clears `int` lock and enables
+        HDMI.
+    *   Failed startup switch logs error without hitting startup skip.
+    *   Boot with HDMI active hits silent-boot fast-bypass (zero
+        `wlr-randr --output`, zero `notify-send`, HDMI audio `off`).
+    *   Boot with both screens active in `single` mode disables `DSI-2` and
+        powers off backlight; `wait_for_compositor` waits for Wayland.
+    *   Monitor startup syncs USM-managed `swayidle` with updated `usm.conf`
+        even when `USM_HDMI_DISABLE_SCREEN_OFF="false"`, while leaving custom
+        non-USM `swayidle` configs untouched.
+*   **`test_issue01_repro.sh`**:
+    *   `idle-off` is silent and writes `ext` lock; `idle-on` re-enables
+        `Enabled: no` HDMI after HPD drop/bounce.
+    *   `USM_HDMI_DISABLE_SCREEN_OFF="true"` keeps Stage 1 screensaver and
+        omits Stage 2 `idle-off`.
+*   **`test_plan2_ext_screen_off.sh` (T1–T8)**:
+    *   T1: Live daemon ignores HPD disconnect during ext `idle-off`;
+        `idle-on` silently re-enables `Enabled: no` HDMI.
+    *   T2: Physical HDMI unplug during ext `idle-off` -> `idle-on`
+        silently recovers `DSI-2` and marks `state_dirty`.
+    *   T3/T5: Ext Power Key pauses `swayidle` and turns off HDMI; 2nd press
+        restores both; `wlopm --off` failure rolls back locks & `swayidle`.
+    *   T4: Int Power Key pauses `swayidle`; live HDMI hotplug clears
+        `manual_off.lock` and restores `swayidle`.
+    *   T6/T7: External app waking HDMI or `DSI-2` clears stale locks
+        (1 Power Key press turns HDMI off; live udev restores `swayidle`).
+    *   T8: Ext Power Key off -> live suspend/resume clears both locks and
+        restores `swayidle`.
+*   **`test_plan2_edge_cases.sh` (T9–T19)**:
+    *   T9–T11: `dual` mode `idle-off`/`idle-on` (incl. `Enabled: no`
+        recovery), Power Key pause/restore, and unplug recovery to `DSI-2`
+        + `state_dirty`.
+    *   T12–T13: `USM_HDMI_DISABLE_SWAYIDLE="true"` and default `usm.conf`
+        never falsely start `swayidle` on HDMI wake/rollback.
+    *   T14–T16: `wlr-randr` failure preserves `idle_off.lock`; missing
+        `wlopm` rolls back cleanly; `cmd_screen_ext --silent` fallback stays
+        silent.
+    *   T17–T19: `wlopm *` wildcard guardrail, `state_dirty` live replug
+        round-trip, and `usm_display.lock` (`flock`) serialization.
+    *   T20–T21: `exec_wlr_randr` bounded 3-attempt retry (overcoming 1.8s
+        CM5 `DSI-2` hardware init window in mock `wlr-randr` + preserving
+        `idle_off.lock` after 3 persistent failures).
 
 ### Upstream Source References
 
@@ -449,11 +521,77 @@ Swayidle 邏輯嚴格遵循單一責任原則（SRP）：
 *   **硬體轉換與服務終止**：當 `USM_HDMI_DISABLE_SWAYIDLE="true"` 時，
     `manage_swayidle` 與 `cleanup_on_exit` 委派給 `cmd_start_swayidle` 與
     `cmd_stop_swayidle`。
-*   **HDMI 熄屏防護**：`USM_HDMI_DISABLE_SCREEN_OFF="true"`（預設）時，
-    連接 HDMI 期間 `cmd_start_swayidle` 會省略階段 2 的
-    `idle-off`/`idle-on` 逾時。HDMI 狀態改變時，`manage_swayidle` 經
-    `_restart_swayidle_on_hdmi_change` 重啟 USM 管理的 swayidle（先喚醒 HDMI
-    並清除 `idle_off.lock`）；自訂 swayidle 設定絕不修改。
+*   **HDMI 熄屏防護與啟動同步**：`USM_HDMI_DISABLE_SCREEN_OFF="true"`
+    （預設）時，連接 HDMI 期間 `cmd_start_swayidle` 會省略階段 2 的
+    `idle-off`/`idle-on` 逾時。`cmd_monitor` 啟動（`usm restart`）時，
+    `_sync_usm_swayidle_on_startup` 會先同步重啟一次 USM 管理的 `swayidle`，
+    確保任何 `usm.conf` 閒置修改皆立即生效。HDMI 狀態改變時，
+    `manage_swayidle` 經 `_restart_swayidle_on_hdmi_change` 重啟 USM 管理的
+    swayidle（先喚醒 HDMI 並清除 `idle_off.lock`）；自訂 swayidle 設定絕不
+    修改。
+
+### 自動化沙盒測試架構
+
+USM 於 `tests/` 提供零外部相依的純 Bash 沙盒測試套件（所有檔案維持
+`0644`，以 `bash tests/run_tests.sh` 執行）。`run_tests.sh` 依序檢查
+`bash -n`、`shellcheck`、`<= 80 chars/line`，並執行全部
+`tests/cases/test_*.sh`。`tests/lib/` 隔離 `HOME`、`XDG_RUNTIME_DIR`、
+`USM_RUN_DIR_OVERRIDE` 與 `USM_SYSFS_ROOT`；`tests/mocks/` 提供 13 個
+對齊上游行為的 mock（含 `wlopm *` 防呆）；`tests/fixtures/` 提供 3 組
+硬體樣板（HP E27u G4、通用 1080p、純內建 DSI）。
+
+*   **`test_wlr_randr_args.sh`**：
+    *   `NOOP-1` pre-cleanup 先於 `DSI-2 --on`，且 `--off` 不夾帶
+        `--mode`/`--transform`/`--pos`。
+    *   通用 1080p 螢幕在 `USM_EXT_RES=""` 時帶 `--preferred`（若 EDID
+        無 `(preferred)` 標記則安全省略）。
+    *   指定 `USM_EXT_RES` 於 `screen-ext` 與 `screen-dual` 皆生效，且
+        `screen-dual` Stage 2 會由 `1024x768` 回復原生 `2560x1440`。
+*   **`test_hw_sequencing.sh`**：
+    *   `ext -> int`：`DSI` 硬體喚醒（`bl_power=0`）先於 `wlr-randr
+        --on`，且保留 HDMI HPD。
+    *   `int -> ext`：`wlr-randr --off` 先於 `DSI` 硬體斷電
+        （`bl_power=4`、DRM `status=off`）。
+*   **`test_lock_and_state.sh`**：
+    *   `monitor` 啟動喚醒殘留 `ext` `idle_off.lock` 並清鎖；即時熱插拔
+        HDMI 清除 `int` 鎖並啟用外接。
+    *   啟動切換失敗記錄錯誤，不誤入啟動略過分支。
+    *   插著 HDMI 靜默開機（命中 `Screen mode matches 'ext'`、零
+        `wlr-randr --output` 與通知、HDMI 音效 `off`）。
+    *   `single` 模式開機雙亮關閉 `DSI-2` 並斷背光；`wait_for_compositor`
+        阻塞等待 Wayland 就緒。
+    *   `monitor` 啟動時即使 `USM_HDMI_DISABLE_SCREEN_OFF="false"` 仍會以
+        新版 `usm.conf` 同步重啟 USM 管理的 `swayidle`，且絕不更動非 USM
+        自訂 `swayidle` 設定。
+*   **`test_issue01_repro.sh`**：
+    *   `idle-off` 靜默寫入 `ext` 鎖；HPD 掉線變 `Enabled: no` 後，
+        `idle-on` 重新啟用 HDMI。
+    *   `USM_HDMI_DISABLE_SCREEN_OFF="true"` 保留 Stage 1 螢幕保護並省略
+        Stage 2 `idle-off`。
+*   **`test_plan2_ext_screen_off.sh`（T1–T8）**：
+    *   T1：外接 `idle-off` 期間即時 daemon 忽略 HPD 斷線，`idle-on`
+        靜默重啟 `Enabled: no` HDMI。
+    *   T2：外接 `idle-off` 期間實體拔線，`idle-on` 靜默救回 `DSI-2`
+        並設 `state_dirty`。
+    *   T3/T5：外接電源鍵熄屏暫停 `swayidle`、二次按鍵恢復；`wlopm
+        --off` 失敗回滾雙鎖與 `swayidle`。
+    *   T4：內建電源鍵熄屏暫停 `swayidle`，即時插入 HDMI 清
+        `manual_off.lock` 並恢復 `swayidle`。
+    *   T6/T7：外部程式點亮 HDMI 或 `DSI-2` 自動清過期鎖（按一次電源鍵即
+        熄屏、即時 udev 恢復 `swayidle`）。
+    *   T8：外接電源鍵熄屏經即時 suspend/resume 清除雙鎖並恢復
+        `swayidle`。
+*   **`test_plan2_edge_cases.sh`（T9–T19）**：
+    *   T9–T11：`dual` 模式 `idle-off`/`idle-on`（含 `Enabled: no`
+        救回）、電源鍵開關與拔線救回 `DSI-2` + `state_dirty`。
+    *   T12–T13：`USM_HDMI_DISABLE_SWAYIDLE="true"` 與預設 `usm.conf`
+        在外接喚醒/回滾時絕不誤啟 `swayidle`。
+    *   T14–T16：`wlr-randr` 失敗保留 `idle_off.lock`；缺 `wlopm` 安全
+        回滾；`cmd_screen_ext --silent` fallback 零通知。
+    *   T17–T19：`wlopm *` wildcard 防呆、`state_dirty` 即時插回閉環、
+        `usm_display.lock`（`flock`）跨行程序列化。
+    *   T20–T21：`exec_wlr_randr` 最多 3 次重試（對齊實機 CM5 `DSI-2`
+        1.8 秒初始化門檻 mock，且 3 次全失敗時保留 `idle_off.lock`）。
 
 ### 上游開源程式碼參考
 

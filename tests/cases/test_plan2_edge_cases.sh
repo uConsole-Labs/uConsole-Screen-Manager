@@ -38,6 +38,8 @@ assert_eq "dual" "$(cat "$USM_RUN_DIR_OVERRIDE/idle_off.lock")" \
   "T9: dual idle-off recorded dual lock"
 assert_file_contains "$USM_MOCK_LOG" "wlopm --off HDMI-A-1" \
   "T9: dual idle-off turned off HDMI via wlopm"
+assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_HDMI_POWER="off"' \
+  "T9: dual idle-off kept HDMI DPMS off after DSI-2 --off"
 assert_eq "4" "$(cat "$USM_SYSFS_ROOT/class/backlight/backlight@0/bl_power")" \
   "T9: dual idle-off powered off DSI backlight"
 sandbox_set_mock_var "wlr.env" "WLR_HDMI_ENABLED" "no"
@@ -205,10 +207,10 @@ sandbox_cleanup
 #      state_dirty -> live HDMI replug switches back despite old LAST_STATE.
 sandbox_init "hw_hp_e27u_g4.env"
 cat > "$USM_MOCK_STATE_DIR/udev.events" <<'EOF'
-SLEEP:1.2
+SLEEP:3.5
 UDEV  [2.0] change   /devices/drm/card2 (drm)
 EOF
-printf "SLEEP:1.5\n" > "$USM_MOCK_STATE_DIR/dbus.events"
+printf "SLEEP:3.8\n" > "$USM_MOCK_STATE_DIR/dbus.events"
 bash "$USM_CLI" monitor >/dev/null 2>&1 &
 mon_pid=$!
 _wait_monitor_ready
@@ -255,6 +257,37 @@ assert_order "$order_log" "holder_released" "switch_done" \
   "T19: screen-switch waited for usm_display.lock release"
 assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_HDMI_POWER="off"' \
   "T19: serialized screen-switch completed cleanly"
+sandbox_cleanup
+
+# T20: Internal DSI-2 idle-on overcomes 1.8s hardware init window via retry.
+sandbox_init "hw_dsi_only.env"
+bash "$USM_CLI" idle-off >/dev/null
+assert_eq "int" "$(cat "$USM_RUN_DIR_OVERRIDE/idle_off.lock")" \
+  "T20: internal idle-off wrote int lock"
+: > "$USM_MOCK_LOG"
+bash "$USM_CLI" idle-on >/dev/null
+assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_DSI_ENABLED="yes"' \
+  "T20: idle-on enabled DSI-2 after >1.8s retry"
+assert_file_not_exists "$USM_RUN_DIR_OVERRIDE/idle_off.lock" \
+  "T20: idle-on cleared idle_off.lock after retry success"
+dsi_tries=$(grep -c "wlr-randr --output DSI-2 --on" "$USM_MOCK_LOG" || true)
+assert_eq "2" "$dsi_tries" \
+  "T20: DSI-2 enable failed 1st try (<1.8s) and succeeded on 2nd try"
+sandbox_cleanup
+
+# T21: exec_wlr_randr retries up to 3 times on persistent failure & keeps lock.
+sandbox_init "hw_dsi_only.env"
+bash "$USM_CLI" idle-off >/dev/null
+sandbox_set_mock_var "wlr.env" "WLR_FAIL_APPLY" "true"
+: > "$USM_MOCK_LOG"
+rc=0
+bash "$USM_CLI" idle-on >/dev/null || rc=$?
+assert_eq "1" "$rc" "T21: idle-on returns 1 after 3 failed attempts"
+assert_file_exists "$USM_RUN_DIR_OVERRIDE/idle_off.lock" \
+  "T21: idle_off.lock preserved after 3 failed attempts"
+dsi_tries=$(grep -c "wlr-randr --output DSI-2 --on" "$USM_MOCK_LOG" || true)
+assert_eq "3" "$dsi_tries" \
+  "T21: exec_wlr_randr attempted exactly 3 times"
 sandbox_cleanup
 
 assert_summary "test_plan2_edge_cases"

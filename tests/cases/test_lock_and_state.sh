@@ -80,4 +80,85 @@ assert_file_not_contains "$log_file" "Screen mode matches" \
   "Failed startup switch did not hit startup skip branch"
 sandbox_cleanup
 
+# 4. Boot with HDMI already active (silent boot: no wlr-randr switch/notify).
+sandbox_init "hw_hp_e27u_g4.env"
+printf "SLEEP:0.3\n" > "$USM_MOCK_STATE_DIR/udev.events"
+: > "$USM_MOCK_STATE_DIR/dbus.events"
+bash "$USM_CLI" monitor >/dev/null 2>&1 || true
+log_file=$(find "$USM_LOG_DIR" -name "usm_log_*.log" | head -n 1)
+assert_file_contains "$log_file" "Screen mode matches 'ext' at start" \
+  "Boot with HDMI hit idempotent silent-boot fast-bypass"
+assert_file_not_contains "$USM_MOCK_LOG" "wlr-randr --output" \
+  "Silent boot did not invoke wlr-randr output mutation"
+assert_file_not_contains "$USM_MOCK_LOG" "notify-send" \
+  "Silent boot emitted zero notifications"
+assert_file_contains "$USM_MOCK_STATE_DIR/audio.env" "HDMI_AUDIO_PROFILE=off" \
+  "Boot async audio init kept HDMI audio off"
+sandbox_cleanup
+
+# 5. Boot with both DSI-2 and HDMI-A-1 active in single mode turns off DSI-2.
+sandbox_init "hw_hp_e27u_g4.env"
+sandbox_set_mock_var "wlr.env" "WLR_DSI_ENABLED" "yes"
+printf "0\n" > "$USM_SYSFS_ROOT/class/backlight/backlight@0/bl_power"
+printf "SLEEP:0.3\n" > "$USM_MOCK_STATE_DIR/udev.events"
+: > "$USM_MOCK_STATE_DIR/dbus.events"
+bash "$USM_CLI" monitor >/dev/null 2>&1 || true
+assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_HDMI_ENABLED="yes"' \
+  "Boot single mode kept HDMI-A-1 enabled"
+assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_DSI_ENABLED="no"' \
+  "Boot single mode disabled DSI-2"
+assert_eq "4" "$(cat "$USM_SYSFS_ROOT/class/backlight/backlight@0/bl_power")" \
+  "Boot single mode powered off DSI backlight"
+sandbox_cleanup
+
+# 6. Boot early before compositor ready: wait_for_compositor blocks then runs.
+sandbox_init "hw_hp_e27u_g4.env"
+sandbox_set_mock_var "wlr.env" "WLR_CONNECT_FAIL" "true"
+printf "SLEEP:0.3\n" > "$USM_MOCK_STATE_DIR/udev.events"
+: > "$USM_MOCK_STATE_DIR/dbus.events"
+bash "$USM_CLI" monitor >/dev/null 2>&1 &
+mon_pid=$!
+sleep 0.4
+sandbox_set_mock_var "wlr.env" "WLR_CONNECT_FAIL" "false"
+wait "$mon_pid" || true
+log_file=$(find "$USM_LOG_DIR" -name "usm_log_*.log" | head -n 1)
+assert_file_contains "$log_file" "Wayland compositor is ready." \
+  "Boot waited until Wayland compositor became ready"
+assert_file_contains "$log_file" "Screen mode matches 'ext' at start" \
+  "Boot completed startup reconciliation after compositor ready"
+sandbox_cleanup
+
+# 7. Monitor startup syncs USM-managed swayidle when DISABLE_SCREEN_OFF=false.
+sandbox_init "hw_hp_e27u_g4.env"
+sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
+sandbox_set_conf "USM_HDMI_DISABLE_SCREEN_OFF" "false"
+sandbox_set_conf "USM_IDLE_SCREEN_OFF_TIMEOUT" "30"
+printf "SWAYIDLE_RUNNING=1\n" > "$USM_MOCK_STATE_DIR/swayidle.env"
+printf "SLEEP:0.3\n" > "$USM_MOCK_STATE_DIR/udev.events"
+: > "$USM_MOCK_STATE_DIR/dbus.events"
+bash "$USM_CLI" monitor >/dev/null 2>&1 || true
+assert_file_contains "$USM_MOCK_LOG" "pkill -x swayidle" \
+  "Monitor startup stopped stale USM swayidle"
+assert_file_contains "$USM_MOCK_LOG" "systemd-run.*timeout 30" \
+  "Monitor startup restarted USM swayidle with new 30s timeout"
+assert_file_contains "$USM_MOCK_STATE_DIR/swayidle.env" "SWAYIDLE_RUNNING=1" \
+  "Monitor startup left USM swayidle running"
+sandbox_cleanup
+
+# 8. Monitor startup never touches custom non-USM swayidle autostart config.
+sandbox_init "hw_hp_e27u_g4.env"
+sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
+sandbox_set_conf "USM_HDMI_DISABLE_SCREEN_OFF" "false"
+printf "swayidle -w timeout 999 'custom' &\n" \
+  > "$HOME/.config/labwc/autostart"
+printf "SWAYIDLE_RUNNING=1\n" > "$USM_MOCK_STATE_DIR/swayidle.env"
+printf "SLEEP:0.3\n" > "$USM_MOCK_STATE_DIR/udev.events"
+: > "$USM_MOCK_STATE_DIR/dbus.events"
+bash "$USM_CLI" monitor >/dev/null 2>&1 || true
+assert_file_not_contains "$USM_MOCK_LOG" "pkill -x swayidle" \
+  "Monitor startup did not kill custom swayidle"
+assert_file_not_contains "$USM_MOCK_LOG" "systemd-run.*swayidle" \
+  "Monitor startup did not restart custom swayidle"
+sandbox_cleanup
+
 assert_summary "test_lock_and_state"

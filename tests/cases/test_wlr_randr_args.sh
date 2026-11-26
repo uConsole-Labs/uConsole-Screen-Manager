@@ -35,8 +35,8 @@ sandbox_init "hw_generic_1080p.env"
 sandbox_set_conf "USM_EXT_RES" ""
 bash "$USM_CLI" screen-ext >/dev/null
 assert_file_contains "$USM_MOCK_LOG" \
-  "--output DSI-2 --off --output HDMI-A-1 --on --transform normal" \
-  "DSI --off clean and HDMI --on omits --mode when USM_EXT_RES empty"
+  "--output DSI-2 --off --output HDMI-A-1 --on --preferred --transform normal" \
+  "DSI --off clean and HDMI --on uses --preferred when USM_EXT_RES empty"
 assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_HDMI_ENABLED="yes"' \
   "1080p HDMI enabled without hardcoded 2560x1440"
 sandbox_cleanup
@@ -53,6 +53,27 @@ bash "$USM_CLI" screen-dual >/dev/null
 assert_file_contains "$USM_MOCK_LOG" \
   "--output DSI-2 --on .*--output HDMI-A-1 --on --mode 1920x1080@60" \
   "cmd_screen_dual honors USM_EXT_RES"
+sandbox_cleanup
+
+# 4. cmd_screen_dual with USM_EXT_RES="" restores preferred 2560x1440 after
+#    Stage 1 1024x768 (does not stay stuck at 1024x768).
+sandbox_init "hw_hp_e27u_g4.env"
+sandbox_set_conf "USM_EXT_RES" ""
+bash "$USM_CLI" screen-dual >/dev/null
+assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" \
+  'WLR_HDMI_CURRENT_MODE="2560x1440"' \
+  "cmd_screen_dual Stage 2 restored preferred 2560x1440 after 1024x768"
+sandbox_cleanup
+
+# 5. Monitor with NO (preferred) mode in EDID omits --preferred safely.
+sandbox_init "hw_generic_1080p.env"
+sandbox_set_conf "USM_EXT_RES" ""
+sandbox_set_mock_var "wlr.env" "WLR_HDMI_PREFERRED" ""
+bash "$USM_CLI" screen-ext >/dev/null
+assert_file_not_contains "$USM_MOCK_LOG" "--preferred" \
+  "Omitted --preferred when HDMI EDID has no preferred mode"
+assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_HDMI_ENABLED="yes"' \
+  "No-preferred-mode HDMI still enabled safely"
 sandbox_cleanup
 
 assert_summary "test_wlr_randr_args"

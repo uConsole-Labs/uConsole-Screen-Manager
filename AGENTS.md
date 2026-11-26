@@ -42,6 +42,7 @@ Every AI Agent contributing to this repository MUST uphold these naming discipli
    - `src/usm-cli.sh`: Main CLI tool, display/hardware/audio/swayidle controller, and event monitor daemon installed to `~/.local/bin/usm-cli.sh`.
    - `src/hooks/usm_hook_*.sh`: Lifecycle hook templates (`hdmi_plug`, `hdmi_unplug`, `usm_start`, `usm_stop`) installed to `~/.config/usm/hooks/`.
    - `systemd/usm.service`: User systemd unit installed to `~/.config/systemd/user/usm.service`.
+   - `tests/`: Pure-Bash sandbox test suite (`run_tests.sh`, `lib/`, `mocks/`, `fixtures/`, `cases/`; all `0644`).
 2. **Function Naming**:
    - `cmd_*`: CLI command entrypoints dispatched by `main()` (e.g., `cmd_monitor`, `cmd_screen_int`, `cmd_screen_ext`, `cmd_screen_dual`, `cmd_screen_on`, `cmd_screen_off`, `cmd_screen_switch`, `cmd_idle_off`, `cmd_idle_on`, `cmd_start_swayidle`, `cmd_stop_swayidle`, `cmd_hdmi_audio_off`, `cmd_status`, `cmd_hw_status`).
    - `usm_*`: Display, hardware power, and state query helpers (e.g., `usm_hw_screen_on`, `usm_hw_screen_off`, `usm_is_screen_detected`, `usm_is_screen_on`).
@@ -115,12 +116,13 @@ Every AI agent writing or refactoring code for this project MUST strictly uphold
    - `run_command` is reserved strictly for running syntax/lint checks (`bash -n`, `shellcheck`), installer/service commands (`./install.sh`, `systemctl`), or system diagnostics that built-in tools cannot perform.
 
 ### 5.2 Verification & Execution Security Invariants
-1. **Mandatory Static & Functional Verification**:
-   - Every modification to `src/usm-cli.sh` or `install.sh` MUST be verified with `bash -n` and `shellcheck` with zero warnings before reporting completion.
-   - Functional changes affecting hardware, hotplug, or `swayidle` MUST include an explicit on-device test checklist covering boot-with-HDMI, hotplug-after-boot, unplug, Power Key (`screen-switch`), and install/uninstall scenarios.
-2. **No Inline Script Injection**:
+1. **Mandatory Testing on Every Change**:
+   - Every code or test change MUST pass `bash tests/run_tests.sh` (`bash -n`, `shellcheck`, `<= 80 chars`, all `test_*.sh`) with zero warnings/failures; hardware/hotplug/`swayidle` changes also require an on-device checklist.
+2. **Test Suite Integrity (Foundation Invariant)**:
+   - `tests/` is the regression foundation; NEVER weaken, skip, delete, or alter existing tests/mocks to make code pass. Only change them with explicit user approval for intentional spec changes or proven test/mock bugs.
+3. **No Inline Script Injection**:
    - Avoid opaque inline eval/script injection commands; keep verification transparent and reproducible.
-3. **Repository Permission Invariants**:
+4. **Repository Permission Invariants**:
    - Maintain clean repository permissions; `install.sh` handles setting executable permissions (`chmod +x`) on deployed binaries (`~/.local/bin/usm-cli.sh`, `~/.local/bin/usm-uninstall`) and hooks.
 
 ### 5.3 Release Discipline & Documentation Sync

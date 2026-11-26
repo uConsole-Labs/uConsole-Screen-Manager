@@ -69,6 +69,8 @@ cur_out=""
 new_dsi="${WLR_DSI_ENABLED:-no}"
 new_hdmi="${WLR_HDMI_ENABLED:-no}"
 new_noop="${WLR_HAS_NOOP:-false}"
+new_hdmi_mode="${WLR_HDMI_CURRENT_MODE:-${WLR_HDMI_PREFERRED:-}}"
+hdmi_mode_set=false
 
 while (( $# > 0 )); do
   case "$1" in
@@ -92,12 +94,32 @@ while (( $# > 0 )); do
       ;;
     --on)
       [[ "$cur_out" == "DSI-2" ]] && new_dsi="yes"
-      [[ "$cur_out" == "HDMI-A-1" ]] && new_hdmi="yes"
+      if [[ "$cur_out" == "HDMI-A-1" ]]; then
+        if [[ "${WLR_HDMI_ENABLED:-no}" != "yes" && \
+              "$hdmi_mode_set" != "true" ]]; then
+          if [[ -n "${WLR_HDMI_PREFERRED:-}" ]]; then
+            new_hdmi_mode="$WLR_HDMI_PREFERRED"
+          else
+            new_hdmi_mode="${WLR_HDMI_MODES%% *}"
+          fi
+        fi
+        new_hdmi="yes"
+      fi
       ;;
     --off)
       [[ "$cur_out" == "DSI-2" ]] && new_dsi="no"
       [[ "$cur_out" == "HDMI-A-1" ]] && new_hdmi="no"
       [[ "$cur_out" == "NOOP-1" ]] && new_noop="false"
+      ;;
+    --preferred)
+      if [[ "$cur_out" == "HDMI-A-1" ]]; then
+        if [[ -z "${WLR_HDMI_PREFERRED:-}" ]]; then
+          printf "no preferred mode found\n" >&2
+          exit 1
+        fi
+        new_hdmi_mode="$WLR_HDMI_PREFERRED"
+        hdmi_mode_set=true
+      fi
       ;;
     --mode)
       shift
@@ -116,6 +138,10 @@ while (( $# > 0 )); do
       if [[ "$found" != "true" ]]; then
         printf "unknown mode: %s\n" "$req_mode" >&2
         exit 1
+      fi
+      if [[ "$cur_out" == "HDMI-A-1" ]]; then
+        new_hdmi_mode="$req_res"
+        hdmi_mode_set=true
       fi
       ;;
     --transform|--pos|--scale)
@@ -137,7 +163,24 @@ if [[ "${WLR_FAIL_APPLY:-false}" == "true" ]]; then
   exit 1
 fi
 
+# Mirror CM5 panel-cwu50 / rp1dsi init settling window (~1.8s after detect).
+if [[ "$new_dsi" == "yes" && "${WLR_DSI_ENABLED:-no}" != "yes" && \
+      -f "${USM_MOCK_STATE_DIR}/dsi_hw_on_ms" ]]; then
+  hw_on_ms=$(cat "${USM_MOCK_STATE_DIR}/dsi_hw_on_ms" 2>/dev/null || printf "0")
+  now_ms=$(date +%s%3N)
+  init_ms="${WLR_DSI_INIT_MS:-1800}"
+  if (( now_ms - hw_on_ms < init_ms )); then
+    printf "failed to apply configuration\n" >&2
+    exit 1
+  fi
+fi
+
 _save_var "WLR_DSI_ENABLED" "$new_dsi"
 _save_var "WLR_HDMI_ENABLED" "$new_hdmi"
 _save_var "WLR_HAS_NOOP" "$new_noop"
+_save_var "WLR_HDMI_CURRENT_MODE" "$new_hdmi_mode"
+# Real wlr-randr commits all enabled heads, re-enabling HDMI DPMS to on.
+if [[ "$new_hdmi" == "yes" ]]; then
+  _save_var "WLR_HDMI_POWER" "on"
+fi
 exit 0
