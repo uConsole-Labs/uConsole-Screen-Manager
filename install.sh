@@ -413,8 +413,12 @@ main() {
     mako >/dev/null 2>&1 &
   fi
 
-  if [[ "$USM_SWAYIDLE_MANAGED" == "true" ]]; then
+  if [[ "$USM_SWAYIDLE_MANAGED" == "true" ]] && \
+     grep -qxF "$SWAYIDLE_MARK_START" "$LABWC_AUTO" 2>/dev/null; then
     if [[ -n "${WAYLAND_DISPLAY:-}" ]]; then
+      # Wake idle-slept screens first: a killed swayidle sends no resume.
+      log "Waking idle-off screens (if any) before restarting swayidle..."
+      "$BIN_DIR/$FILE_CLI" idle-on || true
       log "Restarting swayidle to apply USM configuration..."
       "$BIN_DIR/$FILE_CLI" swayidle-disable || true
       "$BIN_DIR/$FILE_CLI" swayidle-enable || true
@@ -422,6 +426,8 @@ main() {
       log "No active Wayland display in current shell."
       log "New USM swayidle config will take effect on next login."
     fi
+  else
+    log "USM swayidle block not managed. Leaving running swayidle untouched."
   fi
 
   # Prompt to start the service immediately

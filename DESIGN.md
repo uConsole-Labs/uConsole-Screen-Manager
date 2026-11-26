@@ -218,6 +218,12 @@ Swayidle logic adheres to the Single Responsibility Principle (SRP):
 *   **Hardware & Exit Transitions**: `manage_swayidle` and `cleanup_on_exit`
     delegate to `cmd_start_swayidle` / `cmd_stop_swayidle` when
     `USM_HDMI_DISABLE_SWAYIDLE="true"`.
+*   **HDMI Screen-Off Guard**: with `USM_HDMI_DISABLE_SCREEN_OFF="true"`
+    (default), `cmd_start_swayidle` omits the Stage 2 `idle-off`/`idle-on`
+    timeout while HDMI is connected. `manage_swayidle` restarts USM-managed
+    swayidle on HDMI state change via `_restart_swayidle_on_hdmi_change`
+    (waking HDMI and clearing `idle_off.lock` first); custom swayidle
+    configs are never modified.
 
 # 系統架構與設計文件 (Traditional Chinese)
 
@@ -407,3 +413,8 @@ Swayidle 邏輯嚴格遵循單一責任原則（SRP）：
 *   **硬體轉換與服務終止**：當 `USM_HDMI_DISABLE_SWAYIDLE="true"` 時，
     `manage_swayidle` 與 `cleanup_on_exit` 委派給 `cmd_start_swayidle` 與
     `cmd_stop_swayidle`。
+*   **HDMI 熄屏防護**：`USM_HDMI_DISABLE_SCREEN_OFF="true"`（預設）時，
+    連接 HDMI 期間 `cmd_start_swayidle` 會省略階段 2 的
+    `idle-off`/`idle-on` 逾時。HDMI 狀態改變時，`manage_swayidle` 經
+    `_restart_swayidle_on_hdmi_change` 重啟 USM 管理的 swayidle（先喚醒 HDMI
+    並清除 `idle_off.lock`）；自訂 swayidle 設定絕不修改。

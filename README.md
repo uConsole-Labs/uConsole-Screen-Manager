@@ -75,6 +75,9 @@ The config file is located at `~/.config/usm/usm.conf`:
   disables Hot Plug Detect (default: `"false"`).
 * `USM_HDMI_DISABLE_SWAYIDLE`: Set `"true"` to kill swayidle on HDMI connect
   (default: `"false"`; set `"true"` if your monitor drops HPD on DPMS).
+* `USM_HDMI_DISABLE_SCREEN_OFF`: Set `"true"` to drop the Stage 2 screen-off
+  timeout while HDMI is connected (single and dual mode); the screensaver
+  stage is kept (default: `"true"`). Only USM-managed swayidle is affected.
 * `USM_IDLE_SCREENSAVER_TIMEOUT` / `USM_IDLE_SCREENSAVER_CMD`: Stage 1 idle
   timeout (seconds, `"0"` disables) and custom screensaver command.
 * `USM_IDLE_SCREENSAVER_STOP_CMD`: Optional command to stop Stage 1
@@ -235,6 +238,9 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
   導致喪失熱插拔偵測能力 (預設 `"false"`)。
 * `USM_HDMI_DISABLE_SWAYIDLE`：設為 `"true"` 時在連接 HDMI 會停用 swayidle
   (預設 `"false"`；若外接螢幕進入 DPMS 會掉 HPD 可改設 `"true"`)。
+* `USM_HDMI_DISABLE_SCREEN_OFF`：設為 `"true"` 時，連接 HDMI 期間（single 與
+  dual 模式）會移除階段 2 熄屏逾時，保留螢幕保護階段（預設 `"true"`）。
+  僅影響 USM 管理的 swayidle。
 * `USM_IDLE_SCREENSAVER_TIMEOUT` / `USM_IDLE_SCREENSAVER_CMD`：階段 1 螢幕
   保護程式逾時（秒，`"0"` 為停用）與自訂指令。
 * `USM_IDLE_SCREENSAVER_STOP_CMD`：選用指令，於階段 2 熄屏前先結束階段 1

@@ -69,6 +69,7 @@ readonly PROFILE_IDX_ON=1
 
 # --- 6. Mutable Globals & Init ---
 LAST_STATE="unknown"
+LAST_SWAYIDLE_HDMI_STATE="unknown"
 USM_VERSION="unknown"
 START_TIME_YYMMDD=$(date +%y%m%d)
 
@@ -256,13 +257,15 @@ set_log_file_var() {
 # ==============================================================================
 # usm_validate_config
 #
-# Validates and sanitizes the configured USM_MODE. Falls back to single mode
-# if the configuration is invalid or missing.
+# Validates and sanitizes the configured USM_MODE and
+# USM_HDMI_DISABLE_SCREEN_OFF. Falls back to single mode (or "true" for the
+# boolean) if the configuration is invalid or missing.
 #
 # Globals:
 #   CONF_MODE_SINGLE
 #   CONF_MODE_DUAL
 #   USM_MODE
+#   USM_HDMI_DISABLE_SCREEN_OFF
 # Arguments:
 #   None
 # Outputs:
@@ -282,6 +285,17 @@ usm_validate_config() {
       printf "Warning: Invalid USM_MODE '%s'. " "${USM_MODE:-}" >&2
       printf "Falling back to '%s'.\n" "$CONF_MODE_SINGLE" >&2
       USM_MODE="$CONF_MODE_SINGLE"
+      ;;
+  esac
+
+  case "${USM_HDMI_DISABLE_SCREEN_OFF:-true}" in
+    "true"|"false")
+      ;;
+    *)
+      printf "Warning: Invalid USM_HDMI_DISABLE_SCREEN_OFF '%s'. " \
+        "${USM_HDMI_DISABLE_SCREEN_OFF:-}" >&2
+      printf "Falling back to 'true'.\n" >&2
+      USM_HDMI_DISABLE_SCREEN_OFF="true"
       ;;
   esac
 }
@@ -1273,15 +1287,24 @@ cmd_start_swayidle() {
       off_cmd="($stop_ss) || true; $off_cmd"
     fi
 
+    local skip_screen_off=false
+    if [[ "${USM_HDMI_DISABLE_SCREEN_OFF:-true}" == "true" ]] && \
+       is_ext_connected; then
+      skip_screen_off=true
+      log "HDMI connected: skipping Stage 2 screen-off swayidle timeout."
+    fi
+
     if [[ "$ss_to" =~ ^[1-9][0-9]*$ ]] && \
        [[ -n "${USM_IDLE_SCREENSAVER_CMD:-}" ]]; then
       args+=(timeout "$ss_to" "$USM_IDLE_SCREENSAVER_CMD")
-      if ! [[ "$off_to" =~ ^[1-9][0-9]*$ ]] && \
+      if { ! [[ "$off_to" =~ ^[1-9][0-9]*$ ]] || \
+           [[ "$skip_screen_off" == "true" ]]; } && \
          [[ -n "${USM_IDLE_SCREEN_ON_CMD:-}" ]]; then
         args+=(resume "$USM_IDLE_SCREEN_ON_CMD")
       fi
     fi
-    if [[ "$off_to" =~ ^[1-9][0-9]*$ ]]; then
+    if [[ "$off_to" =~ ^[1-9][0-9]*$ ]] && \
+       [[ "$skip_screen_off" != "true" ]]; then
       args+=(timeout "$off_to" "$off_cmd" resume "$on_cmd")
     fi
     if (( ${#args[@]} == 2 )); then
@@ -1328,13 +1351,68 @@ cmd_start_swayidle() {
 }
 
 # ==============================================================================
+# _restart_swayidle_on_hdmi_change
+#
+# Rebuilds swayidle arguments when the HDMI state changes, so that the Stage 2
+# screen-off timeout is dropped while HDMI is connected
+# (USM_HDMI_DISABLE_SCREEN_OFF) and restored after unplug. Only USM-managed
+# swayidle is restarted; custom user swayidle configs are never touched.
+# If an HDMI/dual idle-off is active, the HDMI output is woken and the lock is
+# removed first, because no resume event will fire after the restart.
+#
+# Globals:
+#   LAST_SWAYIDLE_HDMI_STATE
+#   USM_RUN_DIR
+#   STATE_HDMI_CONN
+# Arguments:
+#   $1 - hdmi_state: The current HDMI state.
+# Outputs:
+#   Writes execution logs to stdout/log file.
+# Returns:
+#   Always 0.
+# ==============================================================================
+_restart_swayidle_on_hdmi_change() {
+  local hdmi_state="$1"
+  [[ "$hdmi_state" != "$LAST_SWAYIDLE_HDMI_STATE" ]] || return 0
+
+  local autostart_file="$HOME/.config/labwc/autostart"
+  if [[ ! -f "$autostart_file" ]] || \
+     ! grep -qxF "# === USM Swayidle Config Start ===" "$autostart_file"; then
+    log "Custom swayidle config: USM_HDMI_DISABLE_SCREEN_OFF not applied."
+    LAST_SWAYIDLE_HDMI_STATE="$hdmi_state"
+    return 0
+  fi
+
+  local lock_file="${USM_RUN_DIR:-}/idle_off.lock"
+  if [[ "$hdmi_state" == "$STATE_HDMI_CONN" ]] && \
+     [[ -n "${USM_RUN_DIR:-}" && -f "$lock_file" ]]; then
+    local idle_state=""
+    idle_state=$(cat "$lock_file" 2>/dev/null || true)
+    if [[ "$idle_state" == "$MODE_EXT" || "$idle_state" == "$MODE_DUAL" ]]; then
+      log "HDMI connected during idle-off ($idle_state): waking HDMI."
+      _usm_wake_hdmi_dpms
+      rm -f "$lock_file"
+    fi
+  fi
+
+  log "HDMI state is '$hdmi_state': restarting swayidle."
+  cmd_stop_swayidle
+  cmd_start_swayidle || true
+  LAST_SWAYIDLE_HDMI_STATE="$hdmi_state"
+  return 0
+}
+
+# ==============================================================================
 # manage_swayidle
 #
-# Manages the swayidle process based on HDMI state. Kills swayidle when HDMI
-# is connected, and starts it when disconnected.
+# Manages the swayidle process based on HDMI state. With
+# USM_HDMI_DISABLE_SWAYIDLE=true, kills swayidle when HDMI is connected and
+# starts it when disconnected. Otherwise, with USM_HDMI_DISABLE_SCREEN_OFF=true,
+# restarts USM-managed swayidle on HDMI state change to drop/restore Stage 2.
 #
 # Globals:
 #   USM_HDMI_DISABLE_SWAYIDLE
+#   USM_HDMI_DISABLE_SCREEN_OFF
 #   STATE_HDMI_CONN
 #   STATE_HDMI_DISC
 # Arguments:
@@ -1348,6 +1426,9 @@ manage_swayidle() {
   local hdmi_state="$1"
 
   if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" != "true" ]]; then
+    if [[ "${USM_HDMI_DISABLE_SCREEN_OFF:-true}" == "true" ]]; then
+      _restart_swayidle_on_hdmi_change "$hdmi_state"
+    fi
     return 0
   fi
 
