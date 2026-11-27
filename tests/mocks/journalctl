@@ -1,0 +1,7 @@
+#!/bin/bash
+# Mock journalctl: prevents cmd_status tests from querying host journald.
+
+set -euo pipefail
+
+printf "Mock journalctl output\n"
+exit 0

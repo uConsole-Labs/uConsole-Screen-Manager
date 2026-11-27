@@ -70,6 +70,7 @@ EOF
   printf "vc4drmfb\n" > "$USM_SYSFS_ROOT/class/graphics/fb0/name"
 
   printf "SWAYIDLE_RUNNING=0\n" > "$USM_MOCK_STATE_DIR/swayidle.env"
+  printf "KANSHI_RUNNING=0\n" > "$USM_MOCK_STATE_DIR/kanshi.env"
   printf "HDMI_AUDIO_PROFILE=off\n" > "$USM_MOCK_STATE_DIR/audio.env"
 }
 

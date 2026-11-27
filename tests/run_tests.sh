@@ -41,7 +41,67 @@ else
   FAILED=$((FAILED + 1))
 fi
 
-printf "\n=== 3. Running Modular Sandbox Test Cases ===\n"
+printf "\n=== 3. Static Undefined Constant Check (src/usm-cli.sh) ===\n"
+UNDEF_VARS=0
+while IFS= read -r hit; do
+  printf "  [UNDEF] %s\n" "$hit" >&2
+  UNDEF_VARS=$((UNDEF_VARS + 1))
+done < <(
+  awk '
+    BEGIN {
+      n = split("HOME PATH WAYLAND_DISPLAY XDG_RUNTIME_DIR BASH_REMATCH " \
+                "BASH_SOURCE LINENO SECONDS UID EUID PIPESTATUS IFS PWD " \
+                "TMPDIR USER TERM LANG LC_ALL DISPLAY " \
+                "DBUS_SESSION_BUS_ADDRESS", arr, " ")
+      for (i = 1; i <= n; i++) allow[arr[i]] = 1
+    }
+    /^[[:space:]]*#/ { next }
+    {
+      line = $0
+      gsub(/\047[^\047]*\047/, "", line)
+      sub(/[[:space:]]+#.*/, "", line)
+      dline = line
+      sub(/^[[:space:]]*(readonly[[:space:]]+|export[[:space:]]+)?/, "", dline)
+      if (match(dline, /^[A-Z][A-Z0-9_]+(\+?=)/)) {
+        v = substr(dline, 1, RLENGTH)
+        sub(/\+?=$/, "", v)
+        def[v] = 1
+      }
+      tmp = line
+      while (match(tmp, /\$\{?[A-Z][A-Z0-9_]+/)) {
+        v = substr(tmp, RSTART, RLENGTH)
+        sub(/^\$\{?/, "", v)
+        if (!(v in used_line)) used_line[v] = NR
+        tmp = substr(tmp, RSTART + RLENGTH)
+      }
+      tmp = line
+      while (match(tmp, /\(\([^)]*\)\)/)) {
+        etmp = substr(tmp, RSTART, RLENGTH)
+        tmp = substr(tmp, RSTART + RLENGTH)
+        while (match(etmp, /[A-Z][A-Z0-9_]+/)) {
+          v = substr(etmp, RSTART, RLENGTH)
+          if (!(v in used_line)) used_line[v] = NR
+          etmp = substr(etmp, RSTART + RLENGTH)
+        }
+      }
+    }
+    END {
+      for (v in used_line) {
+        if (v in def || v in allow || v ~ /^USM_/) continue
+        printf "src/usm-cli.sh:%d: %s\n", used_line[v], v
+      }
+    }
+  ' "$REPO_ROOT/src/usm-cli.sh" | sort -t: -k2,2n
+)
+if (( UNDEF_VARS == 0 )); then
+  printf "[PASS] No undefined constants/globals in src/usm-cli.sh\n"
+else
+  printf "[FAIL] Found %d undefined constant(s) in src/usm-cli.sh\n" \
+    "$UNDEF_VARS" >&2
+  FAILED=$((FAILED + 1))
+fi
+
+printf "\n=== 4. Running Modular Sandbox Test Cases ===\n"
 for test_script in "$REPO_ROOT"/tests/cases/test_*.sh; do
   if ! bash "$test_script"; then
     FAILED=$((FAILED + 1))

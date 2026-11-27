@@ -19,6 +19,15 @@ assert_eq() {
   fi
 }
 
+assert_contains() {
+  local haystack="$1"
+  local pattern="$2"
+  local label="${3:-string contains pattern}"
+  if ! grep -qE -- "$pattern" <<< "$haystack" 2>/dev/null; then
+    _assert_fail "$label (pattern='$pattern' not found)"
+  fi
+}
+
 assert_file_contains() {
   local file="$1"
   local pattern="$2"

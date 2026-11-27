@@ -74,7 +74,7 @@ sandbox_cleanup
 
 # T3: Ext Power Key off pauses swayidle; 2nd Power Key wakes & restores.
 sandbox_init "hw_hp_e27u_g4.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "no-screen-off"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_TIMEOUT" "600"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_CMD" "cmatrix &"
 printf "SWAYIDLE_RUNNING=1\n" > "$USM_MOCK_STATE_DIR/swayidle.env"
@@ -100,8 +100,7 @@ sandbox_cleanup
 
 # T4: Int Power Key off pauses swayidle; live HDMI plug clears manual_off.
 sandbox_init "hw_dsi_only.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
-sandbox_set_conf "USM_HDMI_DISABLE_SCREEN_OFF" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "enable"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_TIMEOUT" "600"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_CMD" "cmatrix &"
 cat > "$USM_MOCK_STATE_DIR/udev.events" <<'EOF'
@@ -131,7 +130,7 @@ sandbox_cleanup
 
 # T5: Ext Power Key off rolls back manual_off.lock & swayidle if wlopm fails.
 sandbox_init "hw_hp_e27u_g4.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "no-screen-off"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_TIMEOUT" "600"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_CMD" "cmatrix &"
 sandbox_set_mock_var "wlopm.env" "WLOPM_FAIL_OFF" "true"
@@ -149,7 +148,7 @@ sandbox_cleanup
 
 # T6: External app wakes HDMI (wlopm on) -> 1 Power Key press turns it off.
 sandbox_init "hw_hp_e27u_g4.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "no-screen-off"
 printf "ext\n" > "$USM_RUN_DIR_OVERRIDE/idle_off.lock"
 touch "$USM_RUN_DIR_OVERRIDE/manual_off.lock"
 sandbox_set_mock_var "wlr.env" "WLR_HDMI_POWER" "on"
@@ -163,7 +162,7 @@ sandbox_cleanup
 
 # T7: External app wakes DSI-2 during manual_off -> live udev clears lock.
 sandbox_init "hw_dsi_only.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "no-screen-off"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_TIMEOUT" "600"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_CMD" "cmatrix &"
 cat > "$USM_MOCK_STATE_DIR/udev.events" <<'EOF'
@@ -186,8 +185,7 @@ sandbox_cleanup
 
 # T8: Ext Power Key off -> live suspend/resume clears locks & restores.
 sandbox_init "hw_hp_e27u_g4.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
-sandbox_set_conf "USM_HDMI_DISABLE_SCREEN_OFF" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "enable"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_TIMEOUT" "600"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_CMD" "cmatrix &"
 cat > "$USM_MOCK_STATE_DIR/dbus.events" <<'EOF'

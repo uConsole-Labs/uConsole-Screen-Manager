@@ -29,11 +29,12 @@ readonly HOOK_USM_START="usm_hook_usm_start.sh"
 readonly HOOK_USM_STOP="usm_hook_usm_stop.sh"
 
 # --- 4. Screen & Display ---
-readonly BRIGHTNESS_MAX="9"
-readonly BRIGHTNESS_OFF="0"
 # shellcheck disable=SC2034
 readonly CONF_MODE_DUAL="dual"
 readonly CONF_MODE_SINGLE="single"
+readonly HDMI_IDLE_DISABLE="disable"
+readonly HDMI_IDLE_ENABLE="enable"
+readonly HDMI_IDLE_NO_SCREEN_OFF="no-screen-off"
 readonly FLAG_NO="no"
 readonly FLAG_SILENT="--silent"
 readonly FLAG_YES="yes"
@@ -186,30 +187,6 @@ show_usage() {
 ################################################################################
 
 # ==============================================================================
-# set_sysfs_val
-#
-# Writes a value to a sysfs path using sudo tee.
-#
-# Arguments:
-#   $1 - The sysfs path
-#   $2 - The value to write
-# Returns:
-#   0 on success.
-# ==============================================================================
-set_sysfs_val() {
-  local path="$1"
-  local val="$2"
-  if [[ -n "$path" && -n "$val" ]]; then
-    local err_msg=""
-    if ! err_msg=$(echo "$val" | sudo tee "$path" 2>&1 >/dev/null); then
-      log "Warning: set_sysfs_val failed ($path=$val): $err_msg"
-    fi
-  else
-    log "Warning: set_sysfs_val skipped (empty path or val)."
-  fi
-}
-
-# ==============================================================================
 # set_log_file_var
 #
 # Reads the USM_LOG_ENABLE setting and sets the LOG_FILE global variable.
@@ -258,59 +235,179 @@ set_log_file_var() {
 # ==============================================================================
 # usm_validate_config
 #
-# Validates and sanitizes the configured USM_MODE and
-# USM_HDMI_DISABLE_SCREEN_OFF. Falls back to single mode (or "true" for the
-# boolean) if the configuration is invalid or missing.
+# Normalizes legacy config keys, validates all USM_* configuration values, and
+# emits warnings/errors to stderr (suppressed with --quiet).
 #
-# Globals:
-#   CONF_MODE_SINGLE
-#   CONF_MODE_DUAL
-#   USM_MODE
-#   USM_HDMI_DISABLE_SCREEN_OFF
-# Arguments:
-#   None
-# Outputs:
-#   Writes a warning to stderr if an invalid mode is detected.
 # Returns:
-#   Always 0.
+#   0 if all fail-closed checks pass, 1 if any invalid configuration is found.
 # ==============================================================================
 usm_validate_config() {
-  case "${USM_MODE:-}" in
-    "$CONF_MODE_DUAL")
-      USM_MODE="$CONF_MODE_DUAL"
-      ;;
-    "$CONF_MODE_SINGLE")
-      USM_MODE="$CONF_MODE_SINGLE"
-      ;;
+  local quiet=false
+  [[ "${1:-}" == "--quiet" ]] && quiet=true
+  local has_err=0
+
+  _cfg_err() {
+    has_err=1
+    if [[ "$quiet" != "true" ]]; then
+      printf "Error: %s\n" "$1" >&2
+    fi
+  }
+  _cfg_warn() {
+    if [[ "$quiet" != "true" ]]; then
+      printf "Warning: %s\n" "$1" >&2
+    fi
+  }
+
+  # 1. Backward-compatible mapping for deprecated legacy keys.
+  if [[ -z "${USM_HDMI_IDLE_MODE:-}" ]]; then
+    if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-}" == "true" ]]; then
+      USM_HDMI_IDLE_MODE="$HDMI_IDLE_DISABLE"
+      _cfg_warn \
+        "USM_HDMI_DISABLE_SWAYIDLE is deprecated; use USM_HDMI_IDLE_MODE."
+    elif [[ "${USM_HDMI_DISABLE_SCREEN_OFF:-}" == "false" ]]; then
+      USM_HDMI_IDLE_MODE="$HDMI_IDLE_ENABLE"
+      _cfg_warn \
+        "USM_HDMI_DISABLE_SCREEN_OFF is deprecated; use USM_HDMI_IDLE_MODE."
+    else
+      USM_HDMI_IDLE_MODE="$HDMI_IDLE_NO_SCREEN_OFF"
+      if [[ -n "${USM_HDMI_DISABLE_SWAYIDLE:-}" || \
+            -n "${USM_HDMI_DISABLE_SCREEN_OFF:-}" ]]; then
+        _cfg_warn \
+          "USM_HDMI_DISABLE_* keys are deprecated; use USM_HDMI_IDLE_MODE."
+      fi
+    fi
+  elif [[ -n "${USM_HDMI_DISABLE_SWAYIDLE:-}" || \
+          -n "${USM_HDMI_DISABLE_SCREEN_OFF:-}" ]]; then
+    _cfg_warn \
+      "USM_HDMI_DISABLE_* keys are deprecated; USM_HDMI_IDLE_MODE wins."
+  fi
+
+  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-}" == "true" ]]; then
+    _cfg_warn "USM_ENABLE_HW_POWER_CONTROL is deprecated and ignored."
+  fi
+  if [[ "${USM_HDMI_DRM_FORCE_OFF:-}" == "true" ]]; then
+    _cfg_warn "USM_HDMI_DRM_FORCE_OFF is deprecated and ignored."
+  fi
+  if [[ -n "${USM_IDLE_SCREEN_OFF_CMD:-}" ]]; then
+    _cfg_warn "USM_IDLE_SCREEN_OFF_CMD is deprecated and ignored."
+  fi
+  if [[ -n "${USM_IDLE_SCREEN_ON_CMD:-}" ]]; then
+    _cfg_warn "USM_IDLE_SCREEN_ON_CMD is deprecated and ignored."
+  fi
+
+  # 2. Fail-closed checks.
+  USM_MODE="${USM_MODE:-$CONF_MODE_SINGLE}"
+  case "$USM_MODE" in
+    "$CONF_MODE_SINGLE"|"$CONF_MODE_DUAL") ;;
     *)
-      printf "Warning: Invalid USM_MODE '%s'. " "${USM_MODE:-}" >&2
-      printf "Falling back to '%s'.\n" "$CONF_MODE_SINGLE" >&2
-      USM_MODE="$CONF_MODE_SINGLE"
+      _cfg_err \
+        "Invalid USM_MODE '$USM_MODE' (expected 'single' or 'dual')."
       ;;
   esac
 
-  case "${USM_HDMI_DISABLE_SCREEN_OFF:-true}" in
-    "true"|"false")
-      ;;
+  case "$USM_HDMI_IDLE_MODE" in
+    "$HDMI_IDLE_NO_SCREEN_OFF"|"$HDMI_IDLE_DISABLE"|"$HDMI_IDLE_ENABLE") ;;
     *)
-      printf "Warning: Invalid USM_HDMI_DISABLE_SCREEN_OFF '%s'. " \
-        "${USM_HDMI_DISABLE_SCREEN_OFF:-}" >&2
-      printf "Falling back to 'true'.\n" >&2
-      USM_HDMI_DISABLE_SCREEN_OFF="true"
+      _cfg_err \
+        "Invalid USM_HDMI_IDLE_MODE '$USM_HDMI_IDLE_MODE'."
       ;;
   esac
+
+  local audio_state="${USM_HDMI_AUDIO_DEFAULT_STATE-off}"
+  case "$audio_state" in
+    "$AUDIO_STATE_OFF"|"$AUDIO_STATE_ON"|"") ;;
+    *)
+      _cfg_err \
+        "Invalid USM_HDMI_AUDIO_DEFAULT_STATE '$audio_state'."
+      ;;
+  esac
+
+  local hooks_en="${USM_HOOKS_ENABLE:-false}"
+  case "$hooks_en" in
+    "true"|"false") ;;
+    *)
+      _cfg_err "Invalid USM_HOOKS_ENABLE '$hooks_en' (true/false)."
+      ;;
+  esac
+
+  local log_en="${USM_LOG_ENABLE:-true}"
+  case "$log_en" in
+    "true"|"false") ;;
+    *)
+      _cfg_err "Invalid USM_LOG_ENABLE '$log_en' (true/false)."
+      ;;
+  esac
+
+  local ss_to="${USM_IDLE_SCREENSAVER_TIMEOUT:-0}"
+  local off_to="${USM_IDLE_SCREEN_OFF_TIMEOUT:-600}"
+  local ss_valid=true
+  local off_valid=true
+  if [[ -n "$ss_to" ]] && ! [[ "$ss_to" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    ss_valid=false
+    _cfg_err \
+      "Invalid USM_IDLE_SCREENSAVER_TIMEOUT '$ss_to' (decimal integer)."
+  fi
+  if [[ -n "$off_to" ]] && ! [[ "$off_to" =~ ^(0|[1-9][0-9]*)$ ]]; then
+    off_valid=false
+    _cfg_err \
+      "Invalid USM_IDLE_SCREEN_OFF_TIMEOUT '$off_to' (decimal integer)."
+  fi
+
+  # 3. Warn-only risk & consistency checks.
+  if [[ "$ss_valid" == "true" && -n "$ss_to" ]] && (( 10#$ss_to > 0 )); then
+    if [[ -z "${USM_IDLE_SCREENSAVER_CMD:-}" ]]; then
+      _cfg_warn \
+        "USM_IDLE_SCREENSAVER_TIMEOUT > 0 but USM_IDLE_SCREENSAVER_CMD empty."
+    fi
+    if [[ "$off_valid" == "true" && -n "$off_to" ]] && \
+       (( 10#$off_to > 0 && 10#$ss_to >= 10#$off_to )); then
+      _cfg_warn \
+        "USM_IDLE_SCREENSAVER_TIMEOUT >= USM_IDLE_SCREEN_OFF_TIMEOUT."
+    fi
+  fi
+  if [[ "$audio_state" == "$AUDIO_STATE_ON" ]]; then
+    _cfg_warn \
+      "USM_HDMI_AUDIO_DEFAULT_STATE='on' may risk CM5 hotplug crashes."
+  fi
+  if [[ "$USM_HDMI_IDLE_MODE" == "$HDMI_IDLE_ENABLE" ]]; then
+    _cfg_warn \
+      "USM_HDMI_IDLE_MODE='enable' may trigger HPD drops on some monitors."
+  fi
+
+  return "$has_err"
+}
+
+_unset_usm_conf_vars() {
+  unset USM_MODE USM_EXT_RES USM_EXT_SCALE USM_EXT_POS \
+    USM_IDLE_SCREEN_OFF_TIMEOUT USM_HDMI_IDLE_MODE \
+    USM_IDLE_SCREENSAVER_TIMEOUT USM_IDLE_SCREENSAVER_CMD \
+    USM_IDLE_SCREENSAVER_STOP_CMD USM_HDMI_AUDIO_DEFAULT_STATE \
+    USM_HOOKS_ENABLE USM_LOG_ENABLE USM_HDMI_DISABLE_SWAYIDLE \
+    USM_HDMI_DISABLE_SCREEN_OFF USM_ENABLE_HW_POWER_CONTROL \
+    USM_HDMI_DRM_FORCE_OFF USM_IDLE_SCREEN_OFF_CMD USM_IDLE_SCREEN_ON_CMD
 }
 
 reload_config() {
-  if [[ -f "$CONF_FILE" ]]; then
+  if [[ ! -f "$CONF_FILE" ]]; then
+    log "Warning: SIGHUP received, but $CONF_FILE is missing. Ignored."
+    return 0
+  fi
+  if ! (
+    set -euo pipefail
+    _unset_usm_conf_vars
     # shellcheck disable=SC1090
     source "$CONF_FILE"
-    usm_validate_config
-    set_log_file_var
-    log "Configuration reloaded via SIGHUP."
-  else
-    log "Warning: SIGHUP received, but $CONF_FILE is missing. Ignored."
+    usm_validate_config --quiet
+  ); then
+    log "Error: Invalid config at $CONF_FILE on SIGHUP; keeping prior config."
+    return 0
   fi
+  _unset_usm_conf_vars
+  # shellcheck disable=SC1090
+  source "$CONF_FILE"
+  usm_validate_config || true
+  set_log_file_var
+  log "Configuration reloaded via SIGHUP."
 }
 
 # ==============================================================================
@@ -429,8 +526,8 @@ _clear_manual_off_and_restore_swayidle() {
   local manual_lock="${USM_RUN_DIR:-}/manual_off.lock"
   [[ -n "${USM_RUN_DIR:-}" && -f "$manual_lock" ]] || return 0
   rm -f "$manual_lock"
-  if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" != "true" ]] || \
-     ! is_ext_connected; then
+  if [[ "${USM_HDMI_IDLE_MODE:-$HDMI_IDLE_NO_SCREEN_OFF}" != \
+        "$HDMI_IDLE_DISABLE" ]] || ! is_ext_connected; then
     cmd_start_swayidle || true
   fi
 }
@@ -712,172 +809,12 @@ usm_get_current_usm_mode() {
 }
 
 # ==============================================================================
-# usm_hw_screen_on
-#
-# Hardware level function to prepare the screen prior to Wayland engagement.
-# Strictly controls sysfs and DRM states to ensure display hardware is lit
-# before the compositor starts rendering.
-#
-# Globals:
-#   USM_ENABLE_HW_POWER_CONTROL
-#   BRIGHTNESS_MAX
-#   SCREEN_OUT_INT
-#   SCREEN_OUT_EXT
-# Arguments:
-#   $1 - target: "DSI" or "HDMI"
-# Outputs:
-#   Writes to hardware sysfs and logs execution.
-# Returns:
-#   0 on success.
-# ==============================================================================
-usm_hw_screen_on() {
-  local target="$1"
-  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" != "true" ]]; then
-    return 0
-  fi
-
-  if [[ "$target" == "DSI" ]]; then
-    local bl_path fb_path bl_val
-    bl_path=$(_get_backlight_path)
-    fb_path=$(_get_fb_path)
-    if [[ -n "$bl_path" ]] && [[ -f "$bl_path/bl_power" ]]; then
-      bl_val=$(cat "$bl_path/bl_power" 2>/dev/null || echo "")
-      if [[ "$bl_val" == "$SYSFS_BACKLIGHT_POWER_OFF" ]]; then
-        log "Hardware ON Sequence for DSI"
-        if [[ -n "$fb_path" ]]; then
-          log "HW write: $SYSFS_FRAMEBUFFER_UNBLANK (UNBLANK) -> $fb_path/blank"
-          set_sysfs_val "$fb_path/blank" "$SYSFS_FRAMEBUFFER_UNBLANK"
-        else
-          log "Skip DSI ON: fb0/blank path missing."
-        fi
-        log "HW write: $SYSFS_BACKLIGHT_POWER_ON (ON) -> $bl_path/bl_power"
-        set_sysfs_val "$bl_path/bl_power" "$SYSFS_BACKLIGHT_POWER_ON"
-
-        local dsi_stat
-        dsi_stat=$(
-          find "$DRM_PATH" -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
-            2>/dev/null | head -n 1
-        )
-        if [[ -n "$dsi_stat" ]]; then
-          log "HW write: detect (FORCE DETECT) -> $dsi_stat/status"
-          set_sysfs_val "$dsi_stat/status" "detect"
-        else
-          log "Skip DSI ON: DRM status node missing."
-        fi
-
-        usm_set_int_screen_brightness "$BRIGHTNESS_MAX"
-      else
-        local msg="Skip DSI ON: bl_power='$bl_val'."
-        log "$msg Expected: $SYSFS_BACKLIGHT_POWER_OFF (OFF)."
-      fi
-    else
-      log "Skip DSI ON: bl_power path missing."
-    fi
-  elif [[ "$target" == "HDMI" ]]; then
-    log "Hardware ON Sequence for HDMI"
-    local hdmi_stat
-    hdmi_stat=$(
-      find "$DRM_PATH" -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
-        2>/dev/null | head -n 1
-    )
-    if [[ -n "$hdmi_stat" ]]; then
-      log "HW write: detect (FORCE DETECT) -> $hdmi_stat/status"
-      set_sysfs_val "$hdmi_stat/status" "detect"
-    else
-      log "Skip HDMI ON: DRM status node missing."
-    fi
-  fi
-}
-
-# ==============================================================================
-# usm_hw_screen_off
-#
-# Hardware level function to cut off power to the screen after Wayland releases
-# it. Properly unbinds DRM states to avoid race conditions.
-#
-# Globals:
-#   USM_ENABLE_HW_POWER_CONTROL
-#   USM_HDMI_DRM_FORCE_OFF
-#   SCREEN_OUT_INT
-#   SCREEN_OUT_EXT
-# Arguments:
-#   $1 - target: "DSI" or "HDMI"
-# Outputs:
-#   Writes to hardware sysfs and logs execution.
-# Returns:
-#   0 on success.
-# ==============================================================================
-usm_hw_screen_off() {
-  local target="$1"
-  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" != "true" ]]; then
-    return 0
-  fi
-
-  if [[ "$target" == "DSI" ]]; then
-    local bl_path fb_path bl_val
-    bl_path=$(_get_backlight_path)
-    fb_path=$(_get_fb_path)
-    if [[ -n "$bl_path" ]] && [[ -f "$bl_path/bl_power" ]]; then
-      bl_val=$(cat "$bl_path/bl_power" 2>/dev/null || echo "")
-      if [[ "$bl_val" == "$SYSFS_BACKLIGHT_POWER_ON" ]]; then
-        log "Hardware OFF Sequence for DSI"
-        local dsi_stat
-        dsi_stat=$(
-          find "$DRM_PATH" -maxdepth 1 -name "card*-${SCREEN_OUT_INT}" \
-            2>/dev/null | head -n 1
-        )
-        if [[ -n "$dsi_stat" ]]; then
-          log "HW write: off (FORCE OFF) -> $dsi_stat/status"
-          set_sysfs_val "$dsi_stat/status" "off"
-        else
-          log "Skip DSI OFF: DRM status node missing."
-        fi
-
-        if [[ -n "$fb_path" ]]; then
-          log "HW write: $SYSFS_FRAMEBUFFER_BLANK (BLANK) -> $fb_path/blank"
-          set_sysfs_val "$fb_path/blank" "$SYSFS_FRAMEBUFFER_BLANK"
-        else
-          log "Skip DSI OFF: fb0/blank path missing."
-        fi
-        log "HW write: $SYSFS_BACKLIGHT_POWER_OFF (OFF) -> $bl_path/bl_power"
-        set_sysfs_val "$bl_path/bl_power" "$SYSFS_BACKLIGHT_POWER_OFF"
-
-        usm_set_int_screen_brightness "$BRIGHTNESS_OFF"
-      else
-        local msg="Skip DSI OFF: bl_power='$bl_val'."
-        log "$msg Expected: $SYSFS_BACKLIGHT_POWER_ON (ON)."
-      fi
-    else
-      log "Skip DSI OFF: bl_power path missing."
-    fi
-  elif [[ "$target" == "HDMI" ]]; then
-    if [[ "${USM_HDMI_DRM_FORCE_OFF:-false}" == "true" ]]; then
-      log "Hardware OFF Sequence for HDMI (DRM status=off, HPD disabled)"
-      local hdmi_stat
-      hdmi_stat=$(
-        find "$DRM_PATH" -maxdepth 1 -name "card*-${SCREEN_OUT_EXT}" \
-          2>/dev/null | head -n 1
-      )
-      if [[ -n "$hdmi_stat" ]]; then
-        log "HW write: off (FORCE OFF) -> $hdmi_stat/status"
-        set_sysfs_val "$hdmi_stat/status" "off"
-      else
-        log "Skip HDMI OFF: DRM status node missing."
-      fi
-    else
-      # Bypass DRM 'off' for HDMI to preserve Hot Plug Detect (HPD).
-      log "Hardware OFF for HDMI bypassed to preserve udev HPD events."
-    fi
-  fi
-}
-
-# ==============================================================================
 # _get_backlight_path
 #
 # Helper function to find the sysfs path for the internal screen backlight.
 #
 # Globals:
-#   None
+#   SYSFS_ROOT
 # Arguments:
 #   None
 # Outputs:
@@ -892,47 +829,34 @@ _get_backlight_path() {
 }
 
 # ==============================================================================
-# _get_fb_path
+# _stop_kanshi_if_running
 #
-# Helper function to find the sysfs path for the internal screen framebuffer.
+# Synchronously stops the current user's /usr/bin/kanshi (launched by default
+# from /etc/xdg/labwc/autostart on Raspberry Pi OS Trixie) so it cannot race
+# with USM over zwlr_output_management_v1. Polls up to 1s to confirm exit.
 #
-# Globals:
-#   None
-# Arguments:
-#   None
-# Outputs:
-#   Writes the framebuffer path to stdout.
 # Returns:
 #   Always 0.
 # ==============================================================================
-_get_fb_path() {
-  find "$SYSFS_ROOT/class/graphics" -name "fb0" \
-    2>/dev/null | head -n 1 || true
-}
-
-# ==============================================================================
-# usm_set_int_screen_brightness
-#
-# Forces the internal screen brightness to a specific numeric value.
-#
-# Globals:
-#   None
-# Arguments:
-#   $1 - target_brightness: Numeric brightness value (e.g. BRIGHTNESS_MAX).
-# Outputs:
-#   None
-# Returns:
-#   0 on success, 1 on failure.
-# ==============================================================================
-usm_set_int_screen_brightness() {
-  local target_brightness="$1"
-  local bl_path
-  bl_path=$(_get_backlight_path)
-  if [[ -n "$bl_path" ]]; then
-    log "Hardware write: $target_brightness -> $bl_path/brightness"
-    set_sysfs_val "$bl_path/brightness" "$target_brightness" \
-      2>/dev/null || true
+_stop_kanshi_if_running() {
+  local uid
+  uid=$(id -u)
+  if ! pgrep -u "$uid" -x "kanshi" >/dev/null 2>&1; then
+    return 0
   fi
+  log "Stopping background kanshi to prevent display conflicts..."
+  pkill -u "$uid" -x "kanshi" 2>/dev/null || true
+  local attempt=0
+  while (( attempt < 10 )); do
+    if ! pgrep -u "$uid" -x "kanshi" >/dev/null 2>&1; then
+      log "Background kanshi stopped."
+      return 0
+    fi
+    sleep 0.1
+    attempt=$((attempt + 1))
+  done
+  log "Warning: background kanshi still running after 1s timeout."
+  return 0
 }
 
 
@@ -1392,20 +1316,24 @@ cmd_start_swayidle() {
 
   if [[ -f "$autostart_file" ]] && \
      grep -qxF "# === USM Swayidle Config Start ===" "$autostart_file"; then
+    local idle_mode="${USM_HDMI_IDLE_MODE:-$HDMI_IDLE_NO_SCREEN_OFF}"
+    if [[ "$idle_mode" == "$HDMI_IDLE_DISABLE" ]] && is_ext_connected; then
+      log "HDMI connected & USM_HDMI_IDLE_MODE=disable: skipping swayidle."
+      return 0
+    fi
+
     local args=(swayidle -w)
     local ss_to="${USM_IDLE_SCREENSAVER_TIMEOUT:-0}"
     local off_to="${USM_IDLE_SCREEN_OFF_TIMEOUT:-600}"
-    local def_off="$HOME/.local/bin/usm-cli.sh idle-off"
-    local def_on="$HOME/.local/bin/usm-cli.sh idle-on"
-    local off_cmd="${USM_IDLE_SCREEN_OFF_CMD:-$def_off}"
-    local on_cmd="${USM_IDLE_SCREEN_ON_CMD:-$def_on}"
+    local off_cmd="$HOME/.local/bin/usm-cli.sh idle-off"
+    local on_cmd="$HOME/.local/bin/usm-cli.sh idle-on"
     local stop_ss="${USM_IDLE_SCREENSAVER_STOP_CMD:-}"
     if [[ -n "$stop_ss" ]]; then
       off_cmd="($stop_ss) || true; $off_cmd"
     fi
 
     local skip_screen_off=false
-    if [[ "${USM_HDMI_DISABLE_SCREEN_OFF:-true}" == "true" ]] && \
+    if [[ "$idle_mode" == "$HDMI_IDLE_NO_SCREEN_OFF" ]] && \
        is_ext_connected; then
       skip_screen_off=true
       log "HDMI connected: skipping Stage 2 screen-off swayidle timeout."
@@ -1414,11 +1342,6 @@ cmd_start_swayidle() {
     if [[ "$ss_to" =~ ^[1-9][0-9]*$ ]] && \
        [[ -n "${USM_IDLE_SCREENSAVER_CMD:-}" ]]; then
       args+=(timeout "$ss_to" "$USM_IDLE_SCREENSAVER_CMD")
-      if { ! [[ "$off_to" =~ ^[1-9][0-9]*$ ]] || \
-           [[ "$skip_screen_off" == "true" ]]; } && \
-         [[ -n "${USM_IDLE_SCREEN_ON_CMD:-}" ]]; then
-        args+=(resume "$USM_IDLE_SCREEN_ON_CMD")
-      fi
     fi
     if [[ "$off_to" =~ ^[1-9][0-9]*$ ]] && \
        [[ "$skip_screen_off" != "true" ]]; then
@@ -1495,7 +1418,7 @@ _restart_swayidle_on_hdmi_change() {
   local autostart_file="$HOME/.config/labwc/autostart"
   if [[ ! -f "$autostart_file" ]] || \
      ! grep -qxF "# === USM Swayidle Config Start ===" "$autostart_file"; then
-    log "Custom swayidle config: USM_HDMI_DISABLE_SCREEN_OFF not applied."
+    log "Custom swayidle config: USM_HDMI_IDLE_MODE not applied."
     LAST_SWAYIDLE_HDMI_STATE="$hdmi_state"
     return 0
   fi
@@ -1526,8 +1449,7 @@ _restart_swayidle_on_hdmi_change() {
 # _sync_usm_swayidle_on_startup
 #
 # Rebuilds USM-managed swayidle once when the monitor daemon starts (including
-# `usm restart`), ensuring edited usm.conf idle settings always take effect
-# regardless of USM_HDMI_DISABLE_SCREEN_OFF / USM_HDMI_DISABLE_SWAYIDLE flags.
+# `usm restart`), ensuring edited usm.conf idle settings always take effect.
 # Custom non-USM swayidle configs in autostart are never touched.
 # ==============================================================================
 _sync_usm_swayidle_on_startup() {
@@ -1539,9 +1461,10 @@ _sync_usm_swayidle_on_startup() {
 
   local hdmi_state
   hdmi_state=$(check_hdmi_state)
+  local idle_mode="${USM_HDMI_IDLE_MODE:-$HDMI_IDLE_NO_SCREEN_OFF}"
   log "Syncing USM-managed swayidle on daemon startup..."
   cmd_stop_swayidle
-  if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" != "true" ]] || \
+  if [[ "$idle_mode" != "$HDMI_IDLE_DISABLE" ]] || \
      [[ "$hdmi_state" != "$STATE_HDMI_CONN" ]]; then
     cmd_start_swayidle || true
   fi
@@ -1551,28 +1474,17 @@ _sync_usm_swayidle_on_startup() {
 # ==============================================================================
 # manage_swayidle
 #
-# Manages the swayidle process based on HDMI state. With
-# USM_HDMI_DISABLE_SWAYIDLE=true, kills swayidle when HDMI is connected and
-# starts it when disconnected. Otherwise, with USM_HDMI_DISABLE_SCREEN_OFF=true,
-# restarts USM-managed swayidle on HDMI state change to drop/restore Stage 2.
-#
-# Globals:
-#   USM_HDMI_DISABLE_SWAYIDLE
-#   USM_HDMI_DISABLE_SCREEN_OFF
-#   STATE_HDMI_CONN
-#   STATE_HDMI_DISC
-# Arguments:
-#   $1 - hdmi_state: The current HDMI state.
-# Outputs:
-#   Writes execution logs to stdout/log file.
-# Returns:
-#   0 on success.
+# Manages swayidle based on HDMI state and USM_HDMI_IDLE_MODE:
+#   - "disable": stops swayidle while HDMI is connected, restarts on unplug.
+#   - "no-screen-off": restarts USM-managed swayidle on HDMI state change.
+#   - "enable": leaves swayidle running across HDMI state changes.
 # ==============================================================================
 manage_swayidle() {
   local hdmi_state="$1"
+  local idle_mode="${USM_HDMI_IDLE_MODE:-$HDMI_IDLE_NO_SCREEN_OFF}"
 
-  if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" != "true" ]]; then
-    if [[ "${USM_HDMI_DISABLE_SCREEN_OFF:-true}" == "true" ]]; then
+  if [[ "$idle_mode" != "$HDMI_IDLE_DISABLE" ]]; then
+    if [[ "$idle_mode" == "$HDMI_IDLE_NO_SCREEN_OFF" ]]; then
       _restart_swayidle_on_hdmi_change "$hdmi_state"
     fi
     return 0
@@ -2151,27 +2063,6 @@ cmd_screen_int() {
   log "Starting cmd_screen_int."
   local ret=0
 
-  usm_hw_screen_on "DSI"
-
-  if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" == "true" ]] && \
-     ! usm_is_screen_detected "$SCREEN_OUT_INT"; then
-    log "Waiting for $SCREEN_OUT_INT to appear in wlr-randr..."
-    local attempt=0
-    local dsi_detected=false
-    while (( attempt < DSI_POLL_MAX_ATTEMPTS )); do
-      if usm_is_screen_detected "$SCREEN_OUT_INT"; then
-        log "$SCREEN_OUT_INT detected on attempt $((attempt + 1))."
-        dsi_detected=true
-        break
-      fi
-      sleep "$DSI_POLL_INTERVAL_SEC"
-      attempt=$((attempt + 1))
-    done
-    if [[ "$dsi_detected" != "true" ]]; then
-      log "Warning: $SCREEN_OUT_INT not detected within poll timeout."
-    fi
-  fi
-
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
     "$SCREEN_ENABLED_NO" \
@@ -2179,7 +2070,6 @@ cmd_screen_int() {
   log "First exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
-    usm_hw_screen_off "HDMI"
     [[ "$mode" != "$FLAG_SILENT" ]] && notify_user "Internal Screen Enabled"
     log "Successfully set to internal screen."
     return 0
@@ -2211,9 +2101,6 @@ cmd_screen_int() {
     "$SCREEN_ENABLED_SKIP" \
     "$SCREEN_RES_1024_768" || ret=$?
 
-  if [[ $ret -eq 0 ]]; then
-    usm_hw_screen_off "HDMI"
-  fi
   log "Fallback internal enable returned: $ret"
   return "$ret"
 }
@@ -2223,25 +2110,11 @@ cmd_screen_int() {
 #
 # Sets the display to external screen only. Falls back to internal screen
 # only if the first try fails.
-#
-# Globals:
-#   SCREEN_ENABLED_YES
-#   SCREEN_ENABLED_NO
-#   SCREEN_RES_2560_1440
-#   RETRY_DELAY_SEC
-# Arguments:
-#   None
-# Outputs:
-#   Writes execution logs to stdout/log file.
-# Returns:
-#   0 on success, 1 on failure.
 # ==============================================================================
 cmd_screen_ext() {
   local mode="${1:-}"
   log "Starting cmd_screen_ext."
   local ret=0
-
-  usm_hw_screen_on "HDMI"
 
   exec_wlr_randr \
     "$SCREEN_ENABLED_NO" \
@@ -2250,7 +2123,6 @@ cmd_screen_ext() {
   log "First exec_wlr_randr returned: $ret"
 
   if [[ $ret -eq 0 ]]; then
-    usm_hw_screen_off "DSI"
     _usm_wake_hdmi_dpms || true
     [[ "$mode" != "$FLAG_SILENT" ]] && notify_user "External Screen Enabled"
     log "Successfully set to external screen."
@@ -2272,31 +2144,11 @@ cmd_screen_ext() {
 #
 # Sets the display to dual screen mode using a safe mode sequence. Falls
 # back to internal screen only if it fails.
-#
-# Globals:
-#   SCREEN_ENABLED_YES
-#   SCREEN_RES_1024_768
-#   SCREEN_RES_2560_1440
-#   RETRY_DELAY_SEC
-# Arguments:
-#   None
-# Outputs:
-#   Writes execution logs to stdout/log file.
-# Returns:
-#   0 on success, 1 on failure.
-#
-# Flow:
-#   [usm_hw_screen_on] --> [wlr-randr: target mode]
-#
-# Hardware must be powered on before Wayland configures the DRM connector.
 # ==============================================================================
 cmd_screen_dual() {
   local mode="${1:-}"
   log "Starting cmd_screen_dual."
   local ret=0
-
-  usm_hw_screen_on "DSI"
-  usm_hw_screen_on "HDMI"
 
   exec_wlr_randr \
     "$SCREEN_ENABLED_YES" \
@@ -2384,8 +2236,6 @@ _cmd_screen_off_locked() {
     "$SCREEN_RES_1024_768" || ret=$?
 
   if [[ $ret -eq 0 ]]; then
-    # Completely cut off internal screen power and backlight
-    usm_hw_screen_off "DSI"
     notify_user "Screen Turned Off"
     log "Successfully turned off internal screen."
   else
@@ -2606,7 +2456,6 @@ _cmd_idle_off_locked() {
     log "Idle-off: turning off internal screen ($SCREEN_OUT_INT)."
     if exec_wlr_randr "$SCREEN_ENABLED_NO" "$SCREEN_ENABLED_SKIP" \
          "$SCREEN_RES_1024_768"; then
-      usm_hw_screen_off "DSI"
       int_off=0
     else
       log "Warning: Idle-off failed to disable $SCREEN_OUT_INT."
@@ -2711,23 +2560,6 @@ _cmd_idle_on_locked() {
       log "Idle-on: HDMI active in single mode; skipping DSI wake."
     elif ! usm_is_screen_on "$SCREEN_OUT_INT"; then
       log "Idle-on: waking internal screen ($SCREEN_OUT_INT)."
-      usm_hw_screen_on "DSI"
-      if [[ "${USM_ENABLE_HW_POWER_CONTROL:-false}" == "true" ]] && \
-         ! usm_is_screen_detected "$SCREEN_OUT_INT"; then
-        local attempt=0
-        local dsi_detected=false
-        while (( attempt < DSI_POLL_MAX_ATTEMPTS )); do
-          if usm_is_screen_detected "$SCREEN_OUT_INT"; then
-            dsi_detected=true
-            break
-          fi
-          sleep "$DSI_POLL_INTERVAL_SEC"
-          attempt=$((attempt + 1))
-        done
-        if [[ "$dsi_detected" != "true" ]]; then
-          log "Warning: Idle-on $SCREEN_OUT_INT poll timed out."
-        fi
-      fi
       if ! exec_wlr_randr "$SCREEN_ENABLED_YES" "$SCREEN_ENABLED_SKIP" \
              "$SCREEN_RES_1024_768"; then
         log "Error: Idle-on failed to enable $SCREEN_OUT_INT."
@@ -3044,6 +2876,12 @@ cmd_status() {
     printf "(wlr-randr execution failed)\n"
   fi
 
+  if pgrep -u "$(id -u)" -x "kanshi" >/dev/null 2>&1; then
+    printf "\nKanshi: running (WARNING: conflicts with USM)\n"
+  else
+    printf "\nKanshi: stopped\n"
+  fi
+
   printf "\nRecent Service Logs:\n"
   rc=0
   journalctl --user-unit="$SVC_NAME" \
@@ -3099,6 +2937,7 @@ cmd_monitor() {
   log "Starting monitor daemon..."
   run_hook "$HOOK_USM_START"
   wait_for_compositor
+  _stop_kanshi_if_running
   setup_runtime_dir
   rm -f "$USM_RUN_DIR/usm_suspending.lock"
   rm -f "$USM_RUN_DIR/manual_off.lock"
@@ -3240,7 +3079,8 @@ cleanup_on_exit() {
   [[ -z "${UDEV_PID:-}" ]] || kill "$UDEV_PID" 2>/dev/null || true
   [[ -z "${FIFO_PATH:-}" ]] || rm -f "$FIFO_PATH" 2>/dev/null || true
 
-  if [[ "${USM_HDMI_DISABLE_SWAYIDLE:-true}" == "true" ]]; then
+  if [[ "${USM_HDMI_IDLE_MODE:-$HDMI_IDLE_NO_SCREEN_OFF}" == \
+        "$HDMI_IDLE_DISABLE" ]]; then
     local sys_state
     sys_state=$(systemctl is-system-running 2>/dev/null || true)
     local is_valid_state=false
@@ -3262,21 +3102,35 @@ cleanup_on_exit() {
 }
 
 main() {
+  local conf_rc=0
   if [[ -f "$CONF_FILE" ]]; then
     # shellcheck disable=SC1090
     source "$CONF_FILE"
-    usm_validate_config
+    usm_validate_config || conf_rc=$?
   else
     log "Error: Configuration file not found at $CONF_FILE"
     notify_user "Error: Configuration file not found."
     exit 1
   fi
 
-  set_log_file_var
+  if [[ $conf_rc -eq 0 ]]; then
+    set_log_file_var
+  fi
 
   if (( $# == 0 )); then
     show_usage
     exit 1
+  fi
+
+  if [[ $conf_rc -ne 0 ]]; then
+    case "$1" in
+      read-conf|status|stop|hw_status|version|hdmi-audio-state|\
+      log-enable|log-disable|swayidle-disable|screen-reset|notify-test)
+        ;;
+      *)
+        exit 1
+        ;;
+    esac
   fi
 
   case "$1" in

@@ -64,31 +64,30 @@ Type `usm` in your terminal to see all available commands:
 
 The config file is located at `~/.config/usm/usm.conf`:
 
-* `USM_MODE`: `"single"` (turns off internal) or `"dual"` (keeps both on).
-* `USM_EXT_RES`: Force external resolution (e.g., `"1920x1080@60"`).
-* `USM_EXT_SCALE`: Fractional scaling for external monitors (e.g., `"1.5"`).
-* `USM_EXT_POS`: X,Y coordinates for dual mode (e.g., `"1920,0"`).
-* `USM_HOOKS_ENABLE`: Set `"true"` to run custom plug/unplug shell scripts.
-* `USM_HDMI_AUDIO_DEFAULT_STATE`: Set to `"off"` or `"on"`.
-* `USM_ENABLE_HW_POWER_CONTROL`: Set `"true"` to enable explicit DRM sysfs
-  power control (default: `"true"`).
-* `USM_HDMI_DRM_FORCE_OFF`: Set `"true"` to force DRM 'off' for HDMI, which
-  disables Hot Plug Detect (default: `"false"`).
-* `USM_HDMI_DISABLE_SWAYIDLE`: Set `"true"` to kill swayidle on HDMI connect
-  (default: `"false"`; set `"true"` if your monitor drops HPD on DPMS).
-* `USM_HDMI_DISABLE_SCREEN_OFF`: Set `"true"` to drop the Stage 2 screen-off
-  timeout while HDMI is connected (single and dual mode); the screensaver
-  stage is kept (default: `"true"`). Only USM-managed swayidle is affected.
-* `USM_IDLE_SCREENSAVER_TIMEOUT` / `USM_IDLE_SCREENSAVER_CMD`: Stage 1 idle
-  timeout (seconds, `"0"` disables) and custom screensaver command.
+* `USM_MODE`: `"single"` (external only) or `"dual"` (both displays on).
+* `USM_EXT_RES`: Force external resolution (e.g., `"1920x1080@60"`), or `""`
+  for automatic preferred mode.
+* `USM_IDLE_SCREEN_OFF_TIMEOUT`: Stage 2 idle timeout in seconds before
+  turning off screens (default: `"600"`, `"0"` disables).
+* `USM_HDMI_IDLE_MODE`: Idle policy while HDMI is connected (only affects
+  USM-managed `swayidle`):
+  * `"no-screen-off"` (default): Keep Stage 1 screensaver, omit Stage 2
+    screen-off (recommended; some monitors drop HPD during DPMS).
+  * `"disable"`: Stop `swayidle` completely while HDMI is connected.
+  * `"enable"`: Allow normal Stage 2 screen-off even while HDMI is connected.
+* `USM_IDLE_SCREENSAVER_TIMEOUT` / `USM_IDLE_SCREENSAVER_CMD`: Optional
+  Stage 1 screensaver timeout (seconds, `"0"` disables) and command.
 * `USM_IDLE_SCREENSAVER_STOP_CMD`: Optional command to stop Stage 1
-  screensaver before Stage 2 screen off (empty disables; non-blocking).
-* `USM_IDLE_SCREEN_OFF_TIMEOUT` / `USM_IDLE_SCREEN_OFF_CMD`: Stage 2 idle
-  timeout (default: `"600"`) and command (empty defaults to `idle-off`).
-* `USM_IDLE_SCREEN_ON_CMD`: Stage 3 resume command (empty defaults to
-  `idle-on`). Note: `install.sh` wraps USM swayidle entries in managed
-  markers, migrates `wlopm` with backup, preserves custom non-`wlopm`
-  swayidle configs, and restores backups on `usm-uninstall`.
+  screensaver before Stage 2 screen-off (empty disables; non-blocking).
+* `USM_HDMI_AUDIO_DEFAULT_STATE`: `"off"` (default, prevents CM5 hotplug
+  kernel crash), `"on"`, or `""` (leave unchanged).
+* `USM_HOOKS_ENABLE`: Set `"true"` to run custom plug/unplug shell scripts.
+* `USM_LOG_ENABLE`: Set `"true"` to write logs to `~/.local/state/usm/logs/`.
+
+Note: USM automatically stops the default `/usr/bin/kanshi` process on daemon
+startup (without modifying `/etc/xdg/labwc/autostart` or
+`~/.config/kanshi/config`), preserves custom non-`wlopm` `swayidle` configs,
+and restores backups on `usm-uninstall`.
 
 
 ## 🪝 Custom Hooks
@@ -228,30 +227,28 @@ USM 提供完整的手動控制與測試指令。在終端機輸入 `usm` 即可
 
 設定檔位於 `~/.config/usm/usm.conf`，你可以自由編輯此檔案：
 
-* `USM_MODE`：`"single"` (預設，單螢幕切換) 或 `"dual"` (雙螢幕模式)。
-* `USM_EXT_RES`：指定外接螢幕解析度 (如 `"1920x1080@60"`)，留空為自動。
-* `USM_EXT_SCALE`：設定外接螢幕的畫面縮放比例 (如 `"1.5"`)。
-* `USM_EXT_POS`：雙螢幕模式下的外接螢幕 X,Y 座標 (如 `"1920,0"`)。
-* `USM_HOOKS_ENABLE`：設為 `"true"` 可在切換時觸發自訂 Shell 腳本。
-* `USM_HDMI_AUDIO_DEFAULT_STATE`：啟動時 HDMI 音效的預設狀態 (`"off"` 或 `"on"`)。
-* `USM_ENABLE_HW_POWER_CONTROL`：設為 `"true"` 將啟用底層 DRM 實體斷電與
-  喚醒機制 (預設 `"true"`)。
-* `USM_HDMI_DRM_FORCE_OFF`：設為 `"true"` 將強制關閉 HDMI DRM 狀態，這會
-  導致喪失熱插拔偵測能力 (預設 `"false"`)。
-* `USM_HDMI_DISABLE_SWAYIDLE`：設為 `"true"` 時在連接 HDMI 會停用 swayidle
-  (預設 `"false"`；若外接螢幕進入 DPMS 會掉 HPD 可改設 `"true"`)。
-* `USM_HDMI_DISABLE_SCREEN_OFF`：設為 `"true"` 時，連接 HDMI 期間（single 與
-  dual 模式）會移除階段 2 熄屏逾時，保留螢幕保護階段（預設 `"true"`）。
-  僅影響 USM 管理的 swayidle。
-* `USM_IDLE_SCREENSAVER_TIMEOUT` / `USM_IDLE_SCREENSAVER_CMD`：階段 1 螢幕
-  保護程式逾時（秒，`"0"` 為停用）與自訂指令。
+* `USM_MODE`：`"single"`（預設，只開外接）或 `"dual"`（雙螢幕同時亮）。
+* `USM_EXT_RES`：指定外接螢幕解析度（如 `"1920x1080@60"`），留空為自動最佳。
+* `USM_IDLE_SCREEN_OFF_TIMEOUT`：階段 2 閒置關螢幕逾時（秒，預設 `"600"`，
+  `"0"` 為停用）。
+* `USM_HDMI_IDLE_MODE`：連接 HDMI 期間的閒置策略（僅影響 USM 管理的
+  `swayidle`）：
+  * `"no-screen-off"`（預設）：保留階段 1 螢幕保護，略過階段 2 關螢幕
+    （建議預設，避免部分螢幕進入 DPMS 後斷 HPD）。
+  * `"disable"`：連接 HDMI 期間完全停用 `swayidle`。
+  * `"enable"`：連接 HDMI 期間照常執行階段 2 關螢幕。
+* `USM_IDLE_SCREENSAVER_TIMEOUT` / `USM_IDLE_SCREENSAVER_CMD`：選用階段 1
+  螢幕保護程式逾時（秒，`"0"` 為停用）與自訂指令。
 * `USM_IDLE_SCREENSAVER_STOP_CMD`：選用指令，於階段 2 熄屏前先結束階段 1
   螢幕保護程式（留空為停用，失敗不阻斷熄屏）。
-* `USM_IDLE_SCREEN_OFF_TIMEOUT` / `USM_IDLE_SCREEN_OFF_CMD`：階段 2 關閉螢幕
-  逾時（預設 `"600"`）與指令（留空預設 `idle-off`）。
-* `USM_IDLE_SCREEN_ON_CMD`：階段 3 喚醒指令（留空預設 `idle-on`）。`install.sh`
-  會以受管區塊標記管理 `autostart`，自動備份遷移 `wlopm`、保留非 `wlopm` 的
-  使用者自訂設定，並於 `usm-uninstall` 時自動還原備份。
+* `USM_HDMI_AUDIO_DEFAULT_STATE`：`"off"`（預設，預防 CM5 熱插拔當機）、
+  `"on"` 或 `""`（不更動）。
+* `USM_HOOKS_ENABLE`：設為 `"true"` 可在切換時觸發自訂 Shell 腳本。
+* `USM_LOG_ENABLE`：設為 `"true"` 可將日誌寫入 `~/.local/state/usm/logs/`。
+
+備註：USM 啟動時會自動停用系統預設的 `/usr/bin/kanshi`（不更動
+`/etc/xdg/labwc/autostart` 與 `~/.config/kanshi/config`），並完整保留非
+`wlopm` 的自訂 `swayidle` 設定，於 `usm-uninstall` 時自動還原備份。
 
 
 ## 🪝 自定義腳本 (Custom Hooks)

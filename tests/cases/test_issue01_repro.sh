@@ -1,5 +1,5 @@
 #!/bin/bash
-# Test ISSUE_01 reproduction & USM_HDMI_DISABLE_SCREEN_OFF protection.
+# Test ISSUE_01 reproduction & USM_HDMI_IDLE_MODE="no-screen-off" protection.
 
 set -euo pipefail
 
@@ -33,9 +33,9 @@ assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_HDMI_ENABLED="yes"' \
   "idle-on re-enabled Enabled:no HDMI (ISSUE_01 fixed by Plan 2)"
 sandbox_cleanup
 
-# 2. USM_HDMI_DISABLE_SCREEN_OFF="true" omits Stage 2 idle-off from swayidle.
+# 2. USM_HDMI_IDLE_MODE="no-screen-off" omits Stage 2 idle-off from swayidle.
 sandbox_init "hw_hp_e27u_g4.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SCREEN_OFF" "true"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "no-screen-off"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_TIMEOUT" "600"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_CMD" "cmatrix &"
 sandbox_set_conf "USM_IDLE_SCREEN_OFF_TIMEOUT" "1200"

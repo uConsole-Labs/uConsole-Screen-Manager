@@ -71,6 +71,8 @@ new_hdmi="${WLR_HDMI_ENABLED:-no}"
 new_noop="${WLR_HAS_NOOP:-false}"
 new_hdmi_mode="${WLR_HDMI_CURRENT_MODE:-${WLR_HDMI_PREFERRED:-}}"
 hdmi_mode_set=false
+req_dsi_on=false
+req_dsi_off=false
 
 while (( $# > 0 )); do
   case "$1" in
@@ -93,7 +95,10 @@ while (( $# > 0 )); do
       fi
       ;;
     --on)
-      [[ "$cur_out" == "DSI-2" ]] && new_dsi="yes"
+      if [[ "$cur_out" == "DSI-2" ]]; then
+        new_dsi="yes"
+        req_dsi_on=true
+      fi
       if [[ "$cur_out" == "HDMI-A-1" ]]; then
         if [[ "${WLR_HDMI_ENABLED:-no}" != "yes" && \
               "$hdmi_mode_set" != "true" ]]; then
@@ -107,7 +112,10 @@ while (( $# > 0 )); do
       fi
       ;;
     --off)
-      [[ "$cur_out" == "DSI-2" ]] && new_dsi="no"
+      if [[ "$cur_out" == "DSI-2" ]]; then
+        new_dsi="no"
+        req_dsi_off=true
+      fi
       [[ "$cur_out" == "HDMI-A-1" ]] && new_hdmi="no"
       [[ "$cur_out" == "NOOP-1" ]] && new_noop="false"
       ;;
@@ -163,22 +171,28 @@ if [[ "${WLR_FAIL_APPLY:-false}" == "true" ]]; then
   exit 1
 fi
 
-# Mirror CM5 panel-cwu50 / rp1dsi init settling window (~1.8s after detect).
-if [[ "$new_dsi" == "yes" && "${WLR_DSI_ENABLED:-no}" != "yes" && \
-      -f "${USM_MOCK_STATE_DIR}/dsi_hw_on_ms" ]]; then
-  hw_on_ms=$(cat "${USM_MOCK_STATE_DIR}/dsi_hw_on_ms" 2>/dev/null || printf "0")
-  now_ms=$(date +%s%3N)
-  init_ms="${WLR_DSI_INIT_MS:-1800}"
-  if (( now_ms - hw_on_ms < init_ms )); then
-    printf "failed to apply configuration\n" >&2
-    exit 1
-  fi
+# Mirror RPi libliftoff0 0x333c permanent CRTC deadlock after out-of-band
+# DSI DRM status or fb0/blank sysfs writes.
+if [[ "$req_dsi_on" == "true" && \
+      -f "${USM_MOCK_STATE_DIR}/dsi_drm_poisoned" ]]; then
+  printf "failed to apply configuration\n" >&2
+  exit 1
 fi
 
 _save_var "WLR_DSI_ENABLED" "$new_dsi"
 _save_var "WLR_HDMI_ENABLED" "$new_hdmi"
 _save_var "WLR_HAS_NOOP" "$new_noop"
 _save_var "WLR_HDMI_CURRENT_MODE" "$new_hdmi_mode"
+# Mirror panel-cwu50 kernel driver: automatically toggles bl_power on DSI
+# enable/disable without modifying user brightness.
+bl_power_file="${USM_SYSFS_ROOT}/class/backlight/backlight@0/bl_power"
+if [[ -f "$bl_power_file" ]]; then
+  if [[ "$req_dsi_off" == "true" ]]; then
+    printf "4\n" > "$bl_power_file"
+  elif [[ "$req_dsi_on" == "true" ]]; then
+    printf "0\n" > "$bl_power_file"
+  fi
+fi
 # Real wlr-randr commits all enabled heads, re-enabling HDMI DPMS to on.
 if [[ "$new_hdmi" == "yes" ]]; then
   _save_var "WLR_HDMI_POWER" "on"

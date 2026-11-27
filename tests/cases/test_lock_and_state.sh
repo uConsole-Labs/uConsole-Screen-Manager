@@ -40,7 +40,7 @@ _wait_monitor_ready() {
 
 # 2. _restart_swayidle_on_hdmi_change clears int lock on live HDMI hotplug.
 sandbox_init "hw_dsi_only.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SCREEN_OFF" "true"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "no-screen-off"
 cat > "$USM_MOCK_STATE_DIR/udev.events" <<'EOF'
 SLEEP:0.8
 UDEV  [1.0] change   /devices/drm/card2 (drm)
@@ -128,10 +128,9 @@ assert_file_contains "$log_file" "Screen mode matches 'ext' at start" \
   "Boot completed startup reconciliation after compositor ready"
 sandbox_cleanup
 
-# 7. Monitor startup syncs USM-managed swayidle when DISABLE_SCREEN_OFF=false.
+# 7. Monitor startup syncs USM-managed swayidle when HDMI_IDLE_MODE=enable.
 sandbox_init "hw_hp_e27u_g4.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
-sandbox_set_conf "USM_HDMI_DISABLE_SCREEN_OFF" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "enable"
 sandbox_set_conf "USM_IDLE_SCREEN_OFF_TIMEOUT" "30"
 printf "SWAYIDLE_RUNNING=1\n" > "$USM_MOCK_STATE_DIR/swayidle.env"
 printf "SLEEP:0.3\n" > "$USM_MOCK_STATE_DIR/udev.events"
@@ -147,8 +146,7 @@ sandbox_cleanup
 
 # 8. Monitor startup never touches custom non-USM swayidle autostart config.
 sandbox_init "hw_hp_e27u_g4.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
-sandbox_set_conf "USM_HDMI_DISABLE_SCREEN_OFF" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "enable"
 printf "swayidle -w timeout 999 'custom' &\n" \
   > "$HOME/.config/labwc/autostart"
 printf "SWAYIDLE_RUNNING=1\n" > "$USM_MOCK_STATE_DIR/swayidle.env"
@@ -159,6 +157,27 @@ assert_file_not_contains "$USM_MOCK_LOG" "pkill -x swayidle" \
   "Monitor startup did not kill custom swayidle"
 assert_file_not_contains "$USM_MOCK_LOG" "systemd-run.*swayidle" \
   "Monitor startup did not restart custom swayidle"
+sandbox_cleanup
+
+# 9. Live HDMI unplug during active monitor switches to DSI-2 without crash.
+sandbox_init "hw_hp_e27u_g4.env"
+cat > "$USM_MOCK_STATE_DIR/udev.events" <<'EOF'
+SLEEP:0.8
+UDEV  [1.0] change   /devices/drm/card2 (drm)
+EOF
+printf "SLEEP:1.2\n" > "$USM_MOCK_STATE_DIR/dbus.events"
+bash "$USM_CLI" monitor >/dev/null 2>&1 &
+mon_pid=$!
+_wait_monitor_ready
+sandbox_set_drm "HDMI-A-1" "disconnected" 0
+sandbox_set_mock_var "wlr.env" "WLR_HAS_HDMI" "false"
+sandbox_set_mock_var "wlr.env" "WLR_HDMI_ENABLED" "no"
+wait "$mon_pid" || true
+log_file=$(find "$USM_LOG_DIR" -name "usm_log_*.log" | head -n 1)
+assert_file_contains "$log_file" "DSI-2 detected on attempt 1" \
+  "Live HDMI unplug polled DSI-2 without unbound variable crash"
+assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_DSI_ENABLED="yes"' \
+  "Live HDMI unplug switched output to DSI-2"
 sandbox_cleanup
 
 assert_summary "test_lock_and_state"

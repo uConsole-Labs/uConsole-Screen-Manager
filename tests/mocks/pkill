@@ -1,12 +1,32 @@
 #!/bin/bash
-# Mock pkill: sandbox-scoped process stop (never kills host swayidle).
+# Mock pkill: sandbox-scoped process stop (never kills host processes).
 
 set -euo pipefail
 
-STATE_FILE="${USM_MOCK_STATE_DIR}/swayidle.env"
 printf "pkill %s\n" "$*" >> "$USM_MOCK_LOG"
 
 if [[ "$*" == *"swayidle"* ]]; then
-  printf "SWAYIDLE_RUNNING=0\n" > "$STATE_FILE"
+  state_file="${USM_MOCK_STATE_DIR}/swayidle.env"
+  # shellcheck disable=SC1090,SC1091
+  source "$state_file"
+  if [[ "${SWAYIDLE_RUNNING:-0}" == "1" ]]; then
+    printf "SWAYIDLE_RUNNING=0\n" > "$state_file"
+    exit 0
+  fi
+  exit 1
 fi
-exit 0
+
+if [[ "$*" == *"kanshi"* ]]; then
+  state_file="${USM_MOCK_STATE_DIR}/kanshi.env"
+  if [[ -f "$state_file" ]]; then
+    # shellcheck disable=SC1090,SC1091
+    source "$state_file"
+    if [[ "${KANSHI_RUNNING:-0}" == "1" ]]; then
+      printf "KANSHI_RUNNING=0\n" > "$state_file"
+      exit 0
+    fi
+  fi
+  exit 1
+fi
+
+exit 1

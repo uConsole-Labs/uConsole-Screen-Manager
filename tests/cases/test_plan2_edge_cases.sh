@@ -57,7 +57,7 @@ sandbox_cleanup
 
 # T10: dual mode Power Key off pauses swayidle; 2nd Power Key restores both.
 _setup_dual_active
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "no-screen-off"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_TIMEOUT" "600"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_CMD" "cmatrix &"
 printf "SWAYIDLE_RUNNING=1\n" > "$USM_MOCK_STATE_DIR/swayidle.env"
@@ -99,9 +99,9 @@ assert_file_not_contains "$USM_MOCK_LOG" "notify-send" \
   "T11: dual idle-on recovery remained silent"
 sandbox_cleanup
 
-# T12: USM_HDMI_DISABLE_SWAYIDLE="true" never starts swayidle on rollback/wake.
+# T12: USM_HDMI_IDLE_MODE="disable" never starts swayidle on rollback/wake.
 sandbox_init "hw_hp_e27u_g4.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "true"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "disable"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_TIMEOUT" "600"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_CMD" "cmatrix &"
 sandbox_set_mock_var "wlopm.env" "WLOPM_FAIL_OFF" "true"
@@ -118,10 +118,10 @@ assert_file_contains "$USM_MOCK_STATE_DIR/swayidle.env" "SWAYIDLE_RUNNING=0" \
   "T12: wake did not start swayidle when HDMI disables it"
 sandbox_cleanup
 
-# T13: Default conf (screensaver=0, HDMI_DISABLE_SCREEN_OFF=true) keeps
+# T13: Default conf (screensaver=0, HDMI_IDLE_MODE=no-screen-off) keeps
 #      swayidle stopped on external Power Key wake.
 sandbox_init "hw_hp_e27u_g4.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "no-screen-off"
 printf "SWAYIDLE_RUNNING=0\n" > "$USM_MOCK_STATE_DIR/swayidle.env"
 bash "$USM_CLI" screen-switch >/dev/null
 bash "$USM_CLI" screen-switch >/dev/null
@@ -150,7 +150,7 @@ sandbox_cleanup
 
 # T15: Missing wlopm binary skips ext idle-off safely & rolls back Power Key.
 sandbox_init "hw_hp_e27u_g4.env"
-sandbox_set_conf "USM_HDMI_DISABLE_SWAYIDLE" "false"
+sandbox_set_conf "USM_HDMI_IDLE_MODE" "no-screen-off"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_TIMEOUT" "600"
 sandbox_set_conf "USM_IDLE_SCREENSAVER_CMD" "cmatrix &"
 printf "SWAYIDLE_RUNNING=1\n" > "$USM_MOCK_STATE_DIR/swayidle.env"
@@ -259,7 +259,7 @@ assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_HDMI_POWER="off"' \
   "T19: serialized screen-switch completed cleanly"
 sandbox_cleanup
 
-# T20: Internal DSI-2 idle-on overcomes 1.8s hardware init window via retry.
+# T20: Internal DSI-2 idle-on succeeds on 1st try without DRM poisoning.
 sandbox_init "hw_dsi_only.env"
 bash "$USM_CLI" idle-off >/dev/null
 assert_eq "int" "$(cat "$USM_RUN_DIR_OVERRIDE/idle_off.lock")" \
@@ -267,12 +267,14 @@ assert_eq "int" "$(cat "$USM_RUN_DIR_OVERRIDE/idle_off.lock")" \
 : > "$USM_MOCK_LOG"
 bash "$USM_CLI" idle-on >/dev/null
 assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_DSI_ENABLED="yes"' \
-  "T20: idle-on enabled DSI-2 after >1.8s retry"
+  "T20: idle-on enabled DSI-2 cleanly"
+assert_file_not_exists "$USM_MOCK_STATE_DIR/dsi_drm_poisoned" \
+  "T20: idle-on never poisoned DSI DRM"
 assert_file_not_exists "$USM_RUN_DIR_OVERRIDE/idle_off.lock" \
-  "T20: idle-on cleared idle_off.lock after retry success"
+  "T20: idle-on cleared idle_off.lock"
 dsi_tries=$(grep -c "wlr-randr --output DSI-2 --on" "$USM_MOCK_LOG" || true)
-assert_eq "2" "$dsi_tries" \
-  "T20: DSI-2 enable failed 1st try (<1.8s) and succeeded on 2nd try"
+assert_eq "1" "$dsi_tries" \
+  "T20: DSI-2 enable succeeded on 1st attempt (zero failed commits)"
 sandbox_cleanup
 
 # T21: exec_wlr_randr retries up to 3 times on persistent failure & keeps lock.
@@ -288,6 +290,21 @@ assert_file_exists "$USM_RUN_DIR_OVERRIDE/idle_off.lock" \
 dsi_tries=$(grep -c "wlr-randr --output DSI-2 --on" "$USM_MOCK_LOG" || true)
 assert_eq "3" "$dsi_tries" \
   "T21: exec_wlr_randr attempted exactly 3 times"
+sandbox_cleanup
+
+# T22: cmd_screen_dual from bl_power=4 succeeds on 1st try for both stages.
+sandbox_init "hw_hp_e27u_g4.env"
+sandbox_set_conf "USM_EXT_RES" ""
+: > "$USM_MOCK_LOG"
+bash "$USM_CLI" screen-dual >/dev/null
+assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" 'WLR_DSI_ENABLED="yes"' \
+  "T22: dual mode enabled DSI-2 from bl_power=4"
+assert_file_contains "$USM_MOCK_STATE_DIR/wlr.env" \
+  'WLR_HDMI_CURRENT_MODE="2560x1440"' \
+  "T22: dual mode ended at preferred 2560x1440"
+dual_calls=$(grep -c "wlr-randr --output DSI-2 --on" "$USM_MOCK_LOG" || true)
+assert_eq "2" "$dual_calls" \
+  "T22: Stage 1 + Stage 2 each succeeded on 1st attempt (2 total calls)"
 sandbox_cleanup
 
 assert_summary "test_plan2_edge_cases"
